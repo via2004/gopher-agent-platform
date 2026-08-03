@@ -1,0 +1,34 @@
+package platform
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"gopherai/internal/user"
+)
+
+type UserRepository struct {
+	pool *pgxpool.Pool
+}
+
+func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
+	return &UserRepository{pool: pool}
+}
+
+func (r *UserRepository) Create(ctx context.Context, newUser *user.User) error {
+	err := r.pool.QueryRow(ctx, InsertUser, newUser.Email, newUser.PasswordHash).Scan(&newUser.ID, &newUser.CreatedAt, &newUser.UpdatedAt)
+	var pgErr *pgconn.PgError
+
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+		pgErr.ConstraintName == "users_email_unique" {
+		return user.ErrEmailAlreadyExists
+	}
+
+	if err != nil {
+		return fmt.Errorf("insert user: %w", err)
+	}
+
+	return nil
+}
