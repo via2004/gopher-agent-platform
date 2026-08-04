@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gopherai/internal/user"
@@ -31,4 +32,19 @@ func (r *UserRepository) Create(ctx context.Context, newUser *user.User) error {
 	}
 
 	return nil
+}
+
+func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*user.User, error) {
+	queryUser := user.NewUser()
+	err := r.pool.QueryRow(ctx, QueryUser, email).
+		Scan(&queryUser.ID, &queryUser.Email, &queryUser.PasswordHash,
+			&queryUser.CreatedAt, &queryUser.UpdatedAt)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, user.ErrUserNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("query user error: %w", err)
+	}
+
+	return queryUser, nil
 }

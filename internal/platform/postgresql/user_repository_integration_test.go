@@ -72,6 +72,22 @@ func TestUserRepositoryCreate(t *testing.T) {
 		t.Errorf("stored password hash = %q, want %q", storedPasswordHash, created.PasswordHash)
 	}
 
+	queried, err := repo.GetByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("GetByEmail() error = %v", err)
+	}
+	if queried.ID != created.ID || queried.Email != created.Email ||
+		queried.PasswordHash != created.PasswordHash ||
+		!queried.CreatedAt.Equal(created.CreatedAt) ||
+		!queried.UpdatedAt.Equal(created.UpdatedAt) {
+		t.Errorf("GetByEmail() user = %#v, want %#v", queried, created)
+	}
+
+	missingEmail := fmt.Sprintf("missing-%d@example.com", time.Now().UnixNano())
+	if _, err := repo.GetByEmail(ctx, missingEmail); !errors.Is(err, user.ErrUserNotFound) {
+		t.Fatalf("missing GetByEmail() error = %v, want %v", err, user.ErrUserNotFound)
+	}
+
 	duplicate := &user.User{
 		Email:        email,
 		PasswordHash: "another-password-hash",

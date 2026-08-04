@@ -13,7 +13,7 @@ import (
 )
 
 func TestNewRouterHealthz(t *testing.T) {
-	router := NewRouter(NewUserHandler(&fakeUserRegistrar{}))
+	router := NewRouter(NewUserHandler(&fakeUserRegistrar{}, nil))
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
@@ -38,7 +38,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 		Email:     "user@example.com",
 		CreatedAt: createdAt,
 	}}
-	router := NewRouter(NewUserHandler(registrar))
+	router := NewRouter(NewUserHandler(registrar, nil))
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),
@@ -61,8 +61,13 @@ func (panicUserRegistrar) Register(context.Context, string, string) (*user.User,
 	panic("register panic")
 }
 
+// just for satisfied the interface
+func (panicUserRegistrar) Login(ctx context.Context, email string, password string) (*user.User, error) {
+	panic("login panic")
+}
+
 func TestNewRouterRecoversFromHandlerPanic(t *testing.T) {
-	router := NewRouter(NewUserHandler(panicUserRegistrar{}))
+	router := NewRouter(NewUserHandler(panicUserRegistrar{}, nil))
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),

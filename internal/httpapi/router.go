@@ -14,6 +14,7 @@ func NewRouter(userHandler *UserHandler) *gin.Engine {
 		})
 	})
 	router.POST("/api/v1/auth/register", userHandler.Register)
+	router.POST("/api/v1/auth/login", userHandler.Login)
 
 	return router
 }

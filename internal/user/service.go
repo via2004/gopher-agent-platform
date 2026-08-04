@@ -9,11 +9,15 @@ import (
 	"strings"
 )
 
+const dummyBcryptHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+
 var (
 	ErrInvalidEmail       = errors.New("email is invalid")
 	ErrInvalidPassword    = errors.New("password is invalid")
 	ErrEmailAlreadyExists = errors.New("email already exists")
 	ErrPasswordHash       = errors.New("password hash error")
+	ErrUserNotFound       = errors.New("user not found")
+	ErrInvalidCredentials = errors.New("email or password is incorrect")
 )
 
 type Service struct {
@@ -62,4 +66,37 @@ func (s *Service) Register(ctx context.Context, email string, password string) (
 	}
 
 	return user, nil
+}
+
+func (s *Service) Login(ctx context.Context, email string, password string) (*User, error) {
+	if email == "" {
+		return nil, ErrInvalidEmail
+	}
+	if password == "" {
+		return nil, ErrInvalidPassword
+	}
+
+	email = strings.ToLower(strings.TrimSpace(email))
+	if !valid(email) {
+		return nil, ErrInvalidEmail
+	}
+
+	queryUser, err := s.users.GetByEmail(ctx, email)
+	switch {
+	case errors.Is(err, ErrUserNotFound):
+		bcrypt.CompareHashAndPassword([]byte(dummyBcryptHash), []byte(password))
+		return nil, ErrInvalidCredentials
+	case err != nil:
+		return nil, err
+	}
+
+	err = bcrypt.CompareHashAndPassword([]byte(queryUser.PasswordHash), []byte(password))
+	switch {
+	case errors.Is(err, bcrypt.ErrMismatchedHashAndPassword):
+		return nil, ErrInvalidCredentials
+	case err != nil:
+		return nil, fmt.Errorf("compare password hash: %w", err)
+	}
+
+	return queryUser, nil
 }

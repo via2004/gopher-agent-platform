@@ -3,17 +3,21 @@ package user
 import (
 	"context"
 	"errors"
+	"golang.org/x/crypto/bcrypt"
 	"strings"
 	"testing"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 type fakeUserRepository struct {
-	createCalls int
-	createdUser *User
-	ctx         context.Context
-	err         error
+	createCalls     int
+	createdUser     *User
+	ctx             context.Context
+	err             error
+	getByEmailCalls int
+	queriedEmail    string
+	queryCtx        context.Context
+	queryUser       *User
+	queryErr        error
 }
 
 func (r *fakeUserRepository) Create(ctx context.Context, user *User) error {
@@ -21,6 +25,13 @@ func (r *fakeUserRepository) Create(ctx context.Context, user *User) error {
 	r.createdUser = user
 	r.ctx = ctx
 	return r.err
+}
+
+func (r *fakeUserRepository) GetByEmail(ctx context.Context, email string) (*User, error) {
+	r.getByEmailCalls++
+	r.queriedEmail = email
+	r.queryCtx = ctx
+	return r.queryUser, r.queryErr
 }
 
 func TestServiceRegister(t *testing.T) {
@@ -105,5 +116,141 @@ func TestServiceRegisterReturnsRepositoryError(t *testing.T) {
 	}
 	if repo.createCalls != 1 {
 		t.Fatalf("repository Create() calls = %d, want 1", repo.createCalls)
+	}
+}
+
+func TestServiceLogin(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("generate password hash: %v", err)
+	}
+	wantUser := &User{
+		ID:           42,
+		Email:        "user@example.com",
+		PasswordHash: string(passwordHash),
+	}
+	repo := &fakeUserRepository{queryUser: wantUser}
+	service := NewService(repo)
+	type contextKey string
+	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
+
+	got, err := service.Login(ctx, " User@Example.COM ", "password123")
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if got != wantUser {
+		t.Fatalf("Login() user = %#v, want %#v", got, wantUser)
+	}
+	if repo.getByEmailCalls != 1 {
+		t.Fatalf("GetByEmail() calls = %d, want 1", repo.getByEmailCalls)
+	}
+	if repo.queriedEmail != "user@example.com" {
+		t.Errorf("GetByEmail() email = %q, want %q", repo.queriedEmail, "user@example.com")
+	}
+	if repo.queryCtx != ctx {
+		t.Fatal("Login() did not pass its context to GetByEmail")
+	}
+}
+
+func TestServiceLoginRejectsInvalidInput(t *testing.T) {
+	tests := []struct {
+		name     string
+		email    string
+		password string
+		wantErr  error
+	}{
+		{name: "empty email", email: "", password: "password123", wantErr: ErrInvalidEmail},
+		{name: "whitespace email", email: "   ", password: "password123", wantErr: ErrInvalidEmail},
+		{name: "invalid email", email: "not-an-email", password: "password123", wantErr: ErrInvalidEmail},
+		{name: "empty password", email: "user@example.com", password: "", wantErr: ErrInvalidPassword},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeUserRepository{}
+			service := NewService(repo)
+
+			got, err := service.Login(context.Background(), tt.email, tt.password)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Login() error = %v, want %v", err, tt.wantErr)
+			}
+			if got != nil {
+				t.Fatalf("Login() user = %#v, want nil", got)
+			}
+			if repo.getByEmailCalls != 0 {
+				t.Fatalf("GetByEmail() calls = %d, want 0", repo.getByEmailCalls)
+			}
+		})
+	}
+}
+
+func TestServiceLoginReturnsInvalidCredentials(t *testing.T) {
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("generate password hash: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		repo *fakeUserRepository
+	}{
+		{
+			name: "user not found",
+			repo: &fakeUserRepository{queryErr: ErrUserNotFound},
+		},
+		{
+			name: "wrong password",
+			repo: &fakeUserRepository{queryUser: &User{PasswordHash: string(passwordHash)}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := NewService(tt.repo)
+			got, err := service.Login(context.Background(), "user@example.com", "wrong-password")
+			if !errors.Is(err, ErrInvalidCredentials) {
+				t.Fatalf("Login() error = %v, want %v", err, ErrInvalidCredentials)
+			}
+			if got != nil {
+				t.Fatalf("Login() user = %#v, want nil", got)
+			}
+		})
+	}
+}
+
+func TestServiceLoginReturnsRepositoryError(t *testing.T) {
+	repoErr := errors.New("query user")
+	repo := &fakeUserRepository{queryErr: repoErr}
+	service := NewService(repo)
+
+	got, err := service.Login(context.Background(), "user@example.com", "password123")
+	if !errors.Is(err, repoErr) {
+		t.Fatalf("Login() error = %v, want %v", err, repoErr)
+	}
+	if got != nil {
+		t.Fatalf("Login() user = %#v, want nil", got)
+	}
+}
+
+func TestServiceLoginReportsInvalidStoredHash(t *testing.T) {
+	repo := &fakeUserRepository{queryUser: &User{PasswordHash: "not-a-bcrypt-hash"}}
+	service := NewService(repo)
+
+	got, err := service.Login(context.Background(), "user@example.com", "password123")
+	if err == nil {
+		t.Fatal("Login() error = nil, want stored hash error")
+	}
+	if errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("Login() error = %v, should not be invalid credentials", err)
+	}
+	if got != nil {
+		t.Fatalf("Login() user = %#v, want nil", got)
+	}
+}
+
+func TestDummyBcryptHashIsValid(t *testing.T) {
+	err := bcrypt.CompareHashAndPassword([]byte(dummyBcryptHash), []byte("definitely-not-the-dummy-password"))
+	if !errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+		t.Fatalf("dummy bcrypt hash error = %v, want password mismatch", err)
 	}
 }

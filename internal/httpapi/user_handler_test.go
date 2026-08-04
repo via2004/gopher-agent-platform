@@ -18,10 +18,12 @@ import (
 
 type fakeUserRegistrar struct {
 	registerCalls int
+	loginCalls    int
 	ctx           context.Context
 	email         string
 	password      string
 	registered    *user.User
+	loggedIn      *user.User
 	err           error
 }
 
@@ -33,10 +35,38 @@ func (f *fakeUserRegistrar) Register(ctx context.Context, email, password string
 	return f.registered, f.err
 }
 
+func (f *fakeUserRegistrar) Login(ctx context.Context, email string, password string) (*user.User, error) {
+	f.loginCalls++
+	f.ctx = ctx
+	f.email = email
+	f.password = password
+	return f.loggedIn, f.err
+}
+
+type fakeTokenIssuer struct {
+	calls  int
+	userID uint64
+	token  string
+	err    error
+}
+
+func (f *fakeTokenIssuer) Issue(userID uint64) (string, error) {
+	f.calls++
+	f.userID = userID
+	return f.token, f.err
+}
+
 func newUserHandlerTestRouter(registrar UserRegistrar) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.POST("/api/v1/auth/register", NewUserHandler(registrar).Register)
+	router.POST("/api/v1/auth/register", NewUserHandler(registrar, nil).Register)
+	return router
+}
+
+func newLoginHandlerTestRouter(registrar UserRegistrar, tokens TokenIssuer) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/v1/auth/login", NewUserHandler(registrar, tokens).Login)
 	return router
 }
 
@@ -135,6 +165,117 @@ func TestUserHandlerRegisterMapsServiceErrors(t *testing.T) {
 				t.Fatalf("Register() calls = %d, want 1", registrar.registerCalls)
 			}
 		})
+	}
+}
+
+func TestUserHandlerLogin(t *testing.T) {
+	registrar := &fakeUserRegistrar{loggedIn: &user.User{ID: 42, Email: "user@example.com"}}
+	tokens := &fakeTokenIssuer{token: "access-token"}
+	router := newLoginHandlerTestRouter(registrar, tokens)
+
+	type contextKey string
+	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login",
+		strings.NewReader(`{"email":"User@Example.COM","password":"password123"}`),
+	).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if registrar.loginCalls != 1 {
+		t.Fatalf("Login() calls = %d, want 1", registrar.loginCalls)
+	}
+	if registrar.ctx != ctx {
+		t.Fatal("handler did not pass the request context to Login")
+	}
+	if registrar.email != "User@Example.COM" || registrar.password != "password123" {
+		t.Errorf("Login() credentials = (%q, %q), want (%q, %q)", registrar.email, registrar.password, "User@Example.COM", "password123")
+	}
+	if tokens.calls != 1 || tokens.userID != 42 {
+		t.Fatalf("Issue() = %d calls with user ID %d, want 1 call with user ID 42", tokens.calls, tokens.userID)
+	}
+
+	var response loginResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.AccessToken != "access-token" || response.TokenType != "Bearer" {
+		t.Errorf("response = %#v, want access token and Bearer token type", response)
+	}
+}
+
+func TestUserHandlerLoginRejectsInvalidJSON(t *testing.T) {
+	registrar := &fakeUserRegistrar{}
+	tokens := &fakeTokenIssuer{}
+	router := newLoginHandlerTestRouter(registrar, tokens)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"email":`))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, req)
+
+	assertErrorResponse(t, recorder, http.StatusBadRequest, "INVALID_REQUEST")
+	if registrar.loginCalls != 0 || tokens.calls != 0 {
+		t.Fatalf("calls after invalid JSON: Login = %d, Issue = %d; want both 0", registrar.loginCalls, tokens.calls)
+	}
+}
+
+func TestUserHandlerLoginMapsServiceErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "invalid email", err: user.ErrInvalidEmail, wantStatus: http.StatusBadRequest, wantCode: "INVALID_REQUEST"},
+		{name: "invalid password", err: user.ErrInvalidPassword, wantStatus: http.StatusBadRequest, wantCode: "INVALID_REQUEST"},
+		{name: "invalid credentials", err: user.ErrInvalidCredentials, wantStatus: http.StatusUnauthorized, wantCode: "INVALID_CREDENTIALS"},
+		{name: "unknown failure", err: errors.New("database unavailable"), wantStatus: http.StatusInternalServerError, wantCode: "INTERNAL_SERVER_ERROR"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registrar := &fakeUserRegistrar{err: tt.err}
+			tokens := &fakeTokenIssuer{}
+			router := newLoginHandlerTestRouter(registrar, tokens)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login",
+				strings.NewReader(`{"email":"user@example.com","password":"password123"}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, req)
+
+			assertErrorResponse(t, recorder, tt.wantStatus, tt.wantCode)
+			if registrar.loginCalls != 1 {
+				t.Fatalf("Login() calls = %d, want 1", registrar.loginCalls)
+			}
+			if tokens.calls != 0 {
+				t.Fatalf("Issue() calls = %d, want 0", tokens.calls)
+			}
+		})
+	}
+}
+
+func TestUserHandlerLoginMapsTokenIssueError(t *testing.T) {
+	registrar := &fakeUserRegistrar{loggedIn: &user.User{ID: 42}}
+	tokens := &fakeTokenIssuer{err: errors.New("token signing failed")}
+	router := newLoginHandlerTestRouter(registrar, tokens)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login",
+		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, req)
+
+	assertErrorResponse(t, recorder, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR")
+	if tokens.calls != 1 || tokens.userID != 42 {
+		t.Fatalf("Issue() = %d calls with user ID %d, want 1 call with user ID 42", tokens.calls, tokens.userID)
 	}
 }
 

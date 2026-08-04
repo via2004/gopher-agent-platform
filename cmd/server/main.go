@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gopherai/internal/auth"
 	"gopherai/internal/httpapi"
 	platform "gopherai/internal/platform/postgresql"
 	"gopherai/internal/user"
@@ -17,14 +18,24 @@ import (
 )
 
 const (
-	IPAddr = "127.0.0.1"
-	Port   = ":8080"
+	IPAddr    = "127.0.0.1"
+	Port      = ":8080"
+	jwtIssuer = "gopher-agent-platform"
+	jwtTTL    = time.Hour
 )
 
 func run() error {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		return errors.New("databaseURL is empty!")
+	}
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		return errors.New("JWT_SECRET is empty")
+	}
+	tokenManager, err := auth.NewTokenManager(jwtSecret, jwtIssuer, jwtTTL)
+	if err != nil {
+		return fmt.Errorf("new token manager: %w", err)
 	}
 
 	pool, err := pgxpool.New(context.Background(), databaseURL)
@@ -42,7 +53,9 @@ func run() error {
 	cancel()
 
 	router := httpapi.NewRouter(httpapi.NewUserHandler(
-		user.NewService(platform.NewUserRepository(pool))))
+		user.NewService(platform.NewUserRepository(pool)),
+		tokenManager,
+	))
 
 	server := &http.Server{
 		Addr:           IPAddr + Port,
