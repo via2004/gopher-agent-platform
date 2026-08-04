@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"gopherai/internal/conversation"
 	"gopherai/internal/user"
 )
 
 func TestNewRouterHealthz(t *testing.T) {
-	router := NewRouter(NewUserHandler(&fakeUserRegistrar{}, nil), nil)
+	router := NewRouter(NewUserHandler(&fakeUserRegistrar{}, nil), nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
@@ -38,7 +39,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 		Email:     "user@example.com",
 		CreatedAt: createdAt,
 	}}
-	router := NewRouter(NewUserHandler(registrar, nil), nil)
+	router := NewRouter(NewUserHandler(registrar, nil), nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),
@@ -58,7 +59,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 func TestNewRouterProtectsCurrentUserRoute(t *testing.T) {
 	users := &fakeUserRegistrar{}
 	verifier := &fakeTokenVerifier{}
-	router := NewRouter(NewUserHandler(users, nil), verifier)
+	router := NewRouter(NewUserHandler(users, nil), nil, verifier)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
 
@@ -76,7 +77,7 @@ func TestNewRouterProtectsCurrentUserRoute(t *testing.T) {
 func TestNewRouterServesCurrentUserForValidToken(t *testing.T) {
 	users := &fakeUserRegistrar{queriedUser: &user.User{ID: 42, Email: "user@example.com"}}
 	verifier := &fakeTokenVerifier{userID: 42}
-	router := NewRouter(NewUserHandler(users, nil), verifier)
+	router := NewRouter(NewUserHandler(users, nil), nil, verifier)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
 	req.Header.Set("Authorization", "Bearer access-token")
@@ -91,6 +92,64 @@ func TestNewRouterServesCurrentUserForValidToken(t *testing.T) {
 	}
 	if users.getByIDCalls != 1 || users.queriedUserID != 42 {
 		t.Fatalf("GetByID() = %d calls with user ID %d, want 1 call with user ID 42", users.getByIDCalls, users.queriedUserID)
+	}
+}
+
+func TestNewRouterProtectsCreateConversationRoute(t *testing.T) {
+	service := &fakeConversationService{}
+	verifier := &fakeTokenVerifier{}
+	router := NewRouter(
+		NewUserHandler(&fakeUserRegistrar{}, nil),
+		NewConversationHandler(service),
+		verifier,
+	)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations",
+		strings.NewReader(`{"title":"Go and AI"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	router.ServeHTTP(recorder, req)
+
+	assertErrorResponse(t, recorder, http.StatusUnauthorized, "UNAUTHORIZED")
+	if verifier.calls != 0 {
+		t.Fatalf("Verify() calls = %d, want 0", verifier.calls)
+	}
+	if service.createCalls != 0 {
+		t.Fatalf("Create() calls = %d, want 0", service.createCalls)
+	}
+}
+
+func TestNewRouterCreatesConversationForAuthenticatedUser(t *testing.T) {
+	service := &fakeConversationService{created: &conversation.Conversation{
+		ID:        42,
+		UserID:    7,
+		Title:     "Go and AI",
+		CreatedAt: time.Date(2026, time.August, 5, 12, 0, 0, 0, time.UTC),
+	}}
+	verifier := &fakeTokenVerifier{userID: 7}
+	router := NewRouter(
+		NewUserHandler(&fakeUserRegistrar{}, nil),
+		NewConversationHandler(service),
+		verifier,
+	)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations",
+		strings.NewReader(`{"title":"Go and AI"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer access-token")
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	if verifier.calls != 1 || verifier.token != "access-token" {
+		t.Fatalf("Verify() = %d calls with %q, want 1 call with %q", verifier.calls, verifier.token, "access-token")
+	}
+	if service.createCalls != 1 || service.userID != 7 {
+		t.Fatalf("Create() = %d calls with user ID %d, want 1 call with user ID 7", service.createCalls, service.userID)
 	}
 }
 
@@ -110,7 +169,7 @@ func (panicUserRegistrar) GetByID(ctx context.Context, userID uint64) (*user.Use
 }
 
 func TestNewRouterRecoversFromHandlerPanic(t *testing.T) {
-	router := NewRouter(NewUserHandler(panicUserRegistrar{}, nil), nil)
+	router := NewRouter(NewUserHandler(panicUserRegistrar{}, nil), nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),

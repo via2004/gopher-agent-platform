@@ -1,11 +1,16 @@
 package httpapi
 
 import (
-	"github.com/gin-gonic/gin"
 	"net/http"
+
+	"github.com/gin-gonic/gin"
 )
 
-func NewRouter(userHandler *UserHandler, tokens TokenVerifier) *gin.Engine {
+func NewRouter(
+	userHandler *UserHandler,
+	conversationHandler *ConversationHandler,
+	tokens TokenVerifier,
+) *gin.Engine {
 	router := gin.Default()
 
 	router.GET("/healthz", func(c *gin.Context) {
@@ -19,6 +24,7 @@ func NewRouter(userHandler *UserHandler, tokens TokenVerifier) *gin.Engine {
 	authenticated := router.Group("/api/v1")
 	authenticated.Use(AuthMiddleware(tokens))
 	authenticated.GET("/users/me", userHandler.Me)
+	authenticated.POST("/conversations", conversationHandler.Create)
 
 	return router
 }

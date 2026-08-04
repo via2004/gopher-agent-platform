@@ -4,17 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"gopherai/internal/auth"
-	"gopherai/internal/httpapi"
-	platform "gopherai/internal/platform/postgresql"
-	"gopherai/internal/user"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"gopherai/internal/auth"
+	"gopherai/internal/conversation"
+	"gopherai/internal/httpapi"
+	platform "gopherai/internal/platform/postgresql"
+	"gopherai/internal/user"
 )
 
 const (
@@ -52,10 +55,13 @@ func run() error {
 	}
 	cancel()
 
-	router := httpapi.NewRouter(httpapi.NewUserHandler(
-		user.NewService(platform.NewUserRepository(pool)),
-		tokenManager,
-	), tokenManager)
+	userService := user.NewService(platform.NewUserRepository(pool))
+	userHandler := httpapi.NewUserHandler(userService, tokenManager)
+
+	conversationService := conversation.NewService(platform.NewConversationRepository(pool))
+	conversationHandler := httpapi.NewConversationHandler(conversationService)
+
+	router := httpapi.NewRouter(userHandler, conversationHandler, tokenManager)
 
 	server := &http.Server{
 		Addr:           IPAddr + Port,
