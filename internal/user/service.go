@@ -100,3 +100,12 @@ func (s *Service) Login(ctx context.Context, email string, password string) (*Us
 
 	return queryUser, nil
 }
+
+func (s *Service) GetByID(ctx context.Context, userID uint64) (*User, error) {
+	queryUser, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	return queryUser, nil
+}

@@ -36,7 +36,22 @@ func (r *UserRepository) Create(ctx context.Context, newUser *user.User) error {
 
 func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*user.User, error) {
 	queryUser := user.NewUser()
-	err := r.pool.QueryRow(ctx, QueryUser, email).
+	err := r.pool.QueryRow(ctx, QueryUserByEmail, email).
+		Scan(&queryUser.ID, &queryUser.Email, &queryUser.PasswordHash,
+			&queryUser.CreatedAt, &queryUser.UpdatedAt)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, user.ErrUserNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("query user error: %w", err)
+	}
+
+	return queryUser, nil
+}
+
+func (r *UserRepository) GetByID(ctx context.Context, userID uint64) (*user.User, error) {
+	queryUser := user.NewUser()
+	err := r.pool.QueryRow(ctx, QueryUserByID, userID).
 		Scan(&queryUser.ID, &queryUser.Email, &queryUser.PasswordHash,
 			&queryUser.CreatedAt, &queryUser.UpdatedAt)
 

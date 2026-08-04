@@ -10,7 +10,7 @@ import (
 )
 
 type UserHandler struct {
-	users  UserRegistrar
+	users  UserService
 	tokens TokenIssuer
 }
 
@@ -29,6 +29,12 @@ type registerResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type meResponse struct {
+	ID        uint64    `json:"id"`
+	Email     string    `json:"email"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type loginResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
@@ -39,16 +45,17 @@ type errorResponse struct {
 	Message string `json:"message"`
 }
 
-type UserRegistrar interface {
+type UserService interface {
 	Register(ctx context.Context, email, password string) (*user.User, error)
 	Login(ctx context.Context, email, password string) (*user.User, error)
+	GetByID(ctx context.Context, userID uint64) (*user.User, error)
 }
 
 type TokenIssuer interface {
 	Issue(userID uint64) (string, error)
 }
 
-func NewUserHandler(users UserRegistrar, tokens TokenIssuer) *UserHandler {
+func NewUserHandler(users UserService, tokens TokenIssuer) *UserHandler {
 	return &UserHandler{
 		users:  users,
 		tokens: tokens,
@@ -130,5 +137,43 @@ func (h *UserHandler) Login(c *gin.Context) {
 	c.JSON(http.StatusOK, loginResponse{
 		AccessToken: accessToken,
 		TokenType:   "Bearer",
+	})
+}
+
+func (h *UserHandler) Me(c *gin.Context) {
+	value, exists := c.Get(userIDContextKey)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, &errorResponse{
+			Code: "UNAUTHORIZED", Message: "need to login first",
+		})
+		return
+	}
+
+	userID, ok := value.(uint64)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, &errorResponse{
+			Code: "UNAUTHORIZED", Message: "need to login first",
+		})
+		return
+	}
+
+	currUser, err := h.users.GetByID(c.Request.Context(), userID)
+	switch {
+	case errors.Is(err, user.ErrUserNotFound):
+		c.JSON(http.StatusUnauthorized, &errorResponse{
+			Code: "UNAUTHORIZED", Message: "need to login first",
+		})
+		return
+	case err != nil:
+		c.JSON(http.StatusInternalServerError, &errorResponse{
+			Code: "INTERNAL_SERVER_ERROR", Message: "internal server error",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, &meResponse{
+		ID:        currUser.ID,
+		Email:     currUser.Email,
+		CreatedAt: currUser.CreatedAt,
 	})
 }

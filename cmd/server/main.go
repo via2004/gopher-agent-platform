@@ -55,7 +55,7 @@ func run() error {
 	router := httpapi.NewRouter(httpapi.NewUserHandler(
 		user.NewService(platform.NewUserRepository(pool)),
 		tokenManager,
-	))
+	), tokenManager)
 
 	server := &http.Server{
 		Addr:           IPAddr + Port,

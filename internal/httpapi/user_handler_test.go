@@ -25,6 +25,10 @@ type fakeUserRegistrar struct {
 	registered    *user.User
 	loggedIn      *user.User
 	err           error
+	getByIDCalls  int
+	queriedUserID uint64
+	queriedUser   *user.User
+	queryErr      error
 }
 
 func (f *fakeUserRegistrar) Register(ctx context.Context, email, password string) (*user.User, error) {
@@ -43,6 +47,13 @@ func (f *fakeUserRegistrar) Login(ctx context.Context, email string, password st
 	return f.loggedIn, f.err
 }
 
+func (f *fakeUserRegistrar) GetByID(ctx context.Context, userID uint64) (*user.User, error) {
+	f.getByIDCalls++
+	f.ctx = ctx
+	f.queriedUserID = userID
+	return f.queriedUser, f.queryErr
+}
+
 type fakeTokenIssuer struct {
 	calls  int
 	userID uint64
@@ -56,17 +67,29 @@ func (f *fakeTokenIssuer) Issue(userID uint64) (string, error) {
 	return f.token, f.err
 }
 
-func newUserHandlerTestRouter(registrar UserRegistrar) *gin.Engine {
+func newUserHandlerTestRouter(registrar UserService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.POST("/api/v1/auth/register", NewUserHandler(registrar, nil).Register)
 	return router
 }
 
-func newLoginHandlerTestRouter(registrar UserRegistrar, tokens TokenIssuer) *gin.Engine {
+func newLoginHandlerTestRouter(registrar UserService, tokens TokenIssuer) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.POST("/api/v1/auth/login", NewUserHandler(registrar, tokens).Login)
+	return router
+}
+
+func newMeHandlerTestRouter(users UserService, userID any, setUserID bool) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/api/v1/users/me", func(c *gin.Context) {
+		if setUserID {
+			c.Set(userIDContextKey, userID)
+		}
+		c.Next()
+	}, NewUserHandler(users, nil).Me)
 	return router
 }
 
@@ -276,6 +299,100 @@ func TestUserHandlerLoginMapsTokenIssueError(t *testing.T) {
 	assertErrorResponse(t, recorder, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR")
 	if tokens.calls != 1 || tokens.userID != 42 {
 		t.Fatalf("Issue() = %d calls with user ID %d, want 1 call with user ID 42", tokens.calls, tokens.userID)
+	}
+}
+
+func TestUserHandlerMe(t *testing.T) {
+	createdAt := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
+	users := &fakeUserRegistrar{queriedUser: &user.User{
+		ID:           42,
+		Email:        "user@example.com",
+		PasswordHash: "must-not-be-returned",
+		CreatedAt:    createdAt,
+	}}
+	router := newMeHandlerTestRouter(users, uint64(42), true)
+	type contextKey string
+	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil).WithContext(ctx)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if users.getByIDCalls != 1 || users.queriedUserID != 42 {
+		t.Fatalf("GetByID() = %d calls with user ID %d, want 1 call with user ID 42", users.getByIDCalls, users.queriedUserID)
+	}
+	if users.ctx != ctx {
+		t.Fatal("handler did not pass the request context to GetByID")
+	}
+
+	var response meResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ID != 42 || response.Email != "user@example.com" || !response.CreatedAt.Equal(createdAt) {
+		t.Errorf("response = %#v", response)
+	}
+	if bytes.Contains(recorder.Body.Bytes(), []byte("must-not-be-returned")) ||
+		bytes.Contains(recorder.Body.Bytes(), []byte("password")) {
+		t.Fatalf("response leaked password data: %s", recorder.Body.String())
+	}
+}
+
+func TestUserHandlerMeRejectsMissingOrInvalidContextUserID(t *testing.T) {
+	tests := []struct {
+		name      string
+		userID    any
+		setUserID bool
+	}{
+		{name: "missing user ID"},
+		{name: "wrong user ID type", userID: "42", setUserID: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users := &fakeUserRegistrar{}
+			router := newMeHandlerTestRouter(users, tt.userID, tt.setUserID)
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, req)
+
+			assertErrorResponse(t, recorder, http.StatusUnauthorized, "UNAUTHORIZED")
+			if users.getByIDCalls != 0 {
+				t.Fatalf("GetByID() calls = %d, want 0", users.getByIDCalls)
+			}
+		})
+	}
+}
+
+func TestUserHandlerMeMapsServiceErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "user not found", err: user.ErrUserNotFound, wantStatus: http.StatusUnauthorized, wantCode: "UNAUTHORIZED"},
+		{name: "unknown failure", err: errors.New("database unavailable"), wantStatus: http.StatusInternalServerError, wantCode: "INTERNAL_SERVER_ERROR"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users := &fakeUserRegistrar{queryErr: tt.err}
+			router := newMeHandlerTestRouter(users, uint64(42), true)
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, req)
+
+			assertErrorResponse(t, recorder, tt.wantStatus, tt.wantCode)
+			if users.getByIDCalls != 1 || users.queriedUserID != 42 {
+				t.Fatalf("GetByID() = %d calls with user ID %d, want 1 call with user ID 42", users.getByIDCalls, users.queriedUserID)
+			}
+		})
 	}
 }
 

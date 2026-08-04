@@ -13,7 +13,7 @@ import (
 )
 
 func TestNewRouterHealthz(t *testing.T) {
-	router := NewRouter(NewUserHandler(&fakeUserRegistrar{}, nil))
+	router := NewRouter(NewUserHandler(&fakeUserRegistrar{}, nil), nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
@@ -38,7 +38,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 		Email:     "user@example.com",
 		CreatedAt: createdAt,
 	}}
-	router := NewRouter(NewUserHandler(registrar, nil))
+	router := NewRouter(NewUserHandler(registrar, nil), nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),
@@ -55,6 +55,45 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 	}
 }
 
+func TestNewRouterProtectsCurrentUserRoute(t *testing.T) {
+	users := &fakeUserRegistrar{}
+	verifier := &fakeTokenVerifier{}
+	router := NewRouter(NewUserHandler(users, nil), verifier)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+
+	router.ServeHTTP(recorder, req)
+
+	assertErrorResponse(t, recorder, http.StatusUnauthorized, "UNAUTHORIZED")
+	if verifier.calls != 0 {
+		t.Fatalf("Verify() calls = %d, want 0", verifier.calls)
+	}
+	if users.getByIDCalls != 0 {
+		t.Fatalf("GetByID() calls = %d, want 0", users.getByIDCalls)
+	}
+}
+
+func TestNewRouterServesCurrentUserForValidToken(t *testing.T) {
+	users := &fakeUserRegistrar{queriedUser: &user.User{ID: 42, Email: "user@example.com"}}
+	verifier := &fakeTokenVerifier{userID: 42}
+	router := NewRouter(NewUserHandler(users, nil), verifier)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	req.Header.Set("Authorization", "Bearer access-token")
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if verifier.calls != 1 || verifier.token != "access-token" {
+		t.Fatalf("Verify() = %d calls with %q, want 1 call with %q", verifier.calls, verifier.token, "access-token")
+	}
+	if users.getByIDCalls != 1 || users.queriedUserID != 42 {
+		t.Fatalf("GetByID() = %d calls with user ID %d, want 1 call with user ID 42", users.getByIDCalls, users.queriedUserID)
+	}
+}
+
 type panicUserRegistrar struct{}
 
 func (panicUserRegistrar) Register(context.Context, string, string) (*user.User, error) {
@@ -66,8 +105,12 @@ func (panicUserRegistrar) Login(ctx context.Context, email string, password stri
 	panic("login panic")
 }
 
+func (panicUserRegistrar) GetByID(ctx context.Context, userID uint64) (*user.User, error) {
+	return nil, nil
+}
+
 func TestNewRouterRecoversFromHandlerPanic(t *testing.T) {
-	router := NewRouter(NewUserHandler(panicUserRegistrar{}, nil))
+	router := NewRouter(NewUserHandler(panicUserRegistrar{}, nil), nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),

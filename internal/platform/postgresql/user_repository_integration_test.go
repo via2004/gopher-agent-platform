@@ -88,6 +88,20 @@ func TestUserRepositoryCreate(t *testing.T) {
 		t.Fatalf("missing GetByEmail() error = %v, want %v", err, user.ErrUserNotFound)
 	}
 
+	queriedByID, err := repo.GetByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if queriedByID.ID != created.ID || queriedByID.Email != created.Email ||
+		queriedByID.PasswordHash != created.PasswordHash ||
+		!queriedByID.CreatedAt.Equal(created.CreatedAt) ||
+		!queriedByID.UpdatedAt.Equal(created.UpdatedAt) {
+		t.Errorf("GetByID() user = %#v, want %#v", queriedByID, created)
+	}
+	if _, err := repo.GetByID(ctx, uint64(1<<63-1)); !errors.Is(err, user.ErrUserNotFound) {
+		t.Fatalf("missing GetByID() error = %v, want %v", err, user.ErrUserNotFound)
+	}
+
 	duplicate := &user.User{
 		Email:        email,
 		PasswordHash: "another-password-hash",

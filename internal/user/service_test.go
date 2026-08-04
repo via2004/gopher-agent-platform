@@ -18,6 +18,11 @@ type fakeUserRepository struct {
 	queryCtx        context.Context
 	queryUser       *User
 	queryErr        error
+	getByIDCalls    int
+	queriedUserID   uint64
+	getByIDCtx      context.Context
+	userByID        *User
+	getByIDErr      error
 }
 
 func (r *fakeUserRepository) Create(ctx context.Context, user *User) error {
@@ -32,6 +37,13 @@ func (r *fakeUserRepository) GetByEmail(ctx context.Context, email string) (*Use
 	r.queriedEmail = email
 	r.queryCtx = ctx
 	return r.queryUser, r.queryErr
+}
+
+func (r *fakeUserRepository) GetByID(ctx context.Context, userID uint64) (*User, error) {
+	r.getByIDCalls++
+	r.queriedUserID = userID
+	r.getByIDCtx = ctx
+	return r.userByID, r.getByIDErr
 }
 
 func TestServiceRegister(t *testing.T) {
@@ -252,5 +264,41 @@ func TestDummyBcryptHashIsValid(t *testing.T) {
 	err := bcrypt.CompareHashAndPassword([]byte(dummyBcryptHash), []byte("definitely-not-the-dummy-password"))
 	if !errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
 		t.Fatalf("dummy bcrypt hash error = %v, want password mismatch", err)
+	}
+}
+
+func TestServiceGetByID(t *testing.T) {
+	wantUser := &User{ID: 42, Email: "user@example.com"}
+	repo := &fakeUserRepository{userByID: wantUser}
+	service := NewService(repo)
+	type contextKey string
+	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
+
+	got, err := service.GetByID(ctx, 42)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if got != wantUser {
+		t.Fatalf("GetByID() user = %#v, want %#v", got, wantUser)
+	}
+	if repo.getByIDCalls != 1 || repo.queriedUserID != 42 {
+		t.Fatalf("repository GetByID() = %d calls with user ID %d, want 1 call with user ID 42", repo.getByIDCalls, repo.queriedUserID)
+	}
+	if repo.getByIDCtx != ctx {
+		t.Fatal("GetByID() did not pass its context to the repository")
+	}
+}
+
+func TestServiceGetByIDReturnsRepositoryError(t *testing.T) {
+	repoErr := errors.New("query user by ID")
+	repo := &fakeUserRepository{getByIDErr: repoErr}
+	service := NewService(repo)
+
+	got, err := service.GetByID(context.Background(), 42)
+	if !errors.Is(err, repoErr) {
+		t.Fatalf("GetByID() error = %v, want %v", err, repoErr)
+	}
+	if got != nil {
+		t.Fatalf("GetByID() user = %#v, want nil", got)
 	}
 }
