@@ -65,4 +65,54 @@ func TestConversationRepositoryCreate(t *testing.T) {
 	if storedUserID != userID || storedTitle != "Go and AI" {
 		t.Errorf("stored conversation = (user ID %d, title %q), want (%d, %q)", storedUserID, storedTitle, userID, "Go and AI")
 	}
+
+	second := &conversation.Conversation{UserID: userID, Title: "Second"}
+	third := &conversation.Conversation{UserID: userID, Title: "Third"}
+	if err := repo.Create(ctx, second); err != nil {
+		t.Fatalf("create second conversation: %v", err)
+	}
+	if err := repo.Create(ctx, third); err != nil {
+		t.Fatalf("create third conversation: %v", err)
+	}
+
+	var otherUserID uint64
+	otherEmail := fmt.Sprintf("other-conversation-test-%d@example.com", time.Now().UnixNano())
+	if err := pool.QueryRow(ctx,
+		"INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id",
+		otherEmail,
+		"test-password-hash",
+	).Scan(&otherUserID); err != nil {
+		t.Fatalf("create other test user: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(), "DELETE FROM users WHERE id = $1", otherUserID); err != nil {
+			t.Errorf("clean up user %d: %v", otherUserID, err)
+		}
+	})
+	if err := repo.Create(ctx, &conversation.Conversation{UserID: otherUserID, Title: "Must not be returned"}); err != nil {
+		t.Fatalf("create other user's conversation: %v", err)
+	}
+
+	firstPage, err := repo.ListByUserID(ctx, userID, 2, 0)
+	if err != nil {
+		t.Fatalf("ListByUserID() first page error = %v", err)
+	}
+	if len(firstPage) != 2 || firstPage[0].ID != third.ID || firstPage[1].ID != second.ID {
+		t.Fatalf("first page IDs = %v, want [%d %d]", conversationIDs(firstPage), third.ID, second.ID)
+	}
+	secondPage, err := repo.ListByUserID(ctx, userID, 2, 2)
+	if err != nil {
+		t.Fatalf("ListByUserID() second page error = %v", err)
+	}
+	if len(secondPage) != 1 || secondPage[0].ID != created.ID {
+		t.Fatalf("second page IDs = %v, want [%d]", conversationIDs(secondPage), created.ID)
+	}
+}
+
+func conversationIDs(conversations []*conversation.Conversation) []uint64 {
+	ids := make([]uint64, 0, len(conversations))
+	for _, item := range conversations {
+		ids = append(ids, item.ID)
+	}
+	return ids
 }

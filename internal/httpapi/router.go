@@ -25,6 +25,6 @@ func NewRouter(
 	authenticated.Use(AuthMiddleware(tokens))
 	authenticated.GET("/users/me", userHandler.Me)
 	authenticated.POST("/conversations", conversationHandler.Create)
-
+	authenticated.GET("/conversations", conversationHandler.List)
 	return router
 }
