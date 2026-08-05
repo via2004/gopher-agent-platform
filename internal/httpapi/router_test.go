@@ -10,11 +10,12 @@ import (
 	"time"
 
 	"gopherai/internal/conversation"
+	"gopherai/internal/message"
 	"gopherai/internal/user"
 )
 
 func TestNewRouterHealthz(t *testing.T) {
-	router := NewRouter(NewUserHandler(&fakeUserRegistrar{}, nil), nil, nil)
+	router := NewRouter(NewUserHandler(&fakeUserRegistrar{}, nil), nil, nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
@@ -39,7 +40,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 		Email:     "user@example.com",
 		CreatedAt: createdAt,
 	}}
-	router := NewRouter(NewUserHandler(registrar, nil), nil, nil)
+	router := NewRouter(NewUserHandler(registrar, nil), nil, nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),
@@ -59,7 +60,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 func TestNewRouterProtectsCurrentUserRoute(t *testing.T) {
 	users := &fakeUserRegistrar{}
 	verifier := &fakeTokenVerifier{}
-	router := NewRouter(NewUserHandler(users, nil), nil, verifier)
+	router := NewRouter(NewUserHandler(users, nil), nil, nil, verifier)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
 
@@ -77,7 +78,7 @@ func TestNewRouterProtectsCurrentUserRoute(t *testing.T) {
 func TestNewRouterServesCurrentUserForValidToken(t *testing.T) {
 	users := &fakeUserRegistrar{queriedUser: &user.User{ID: 42, Email: "user@example.com"}}
 	verifier := &fakeTokenVerifier{userID: 42}
-	router := NewRouter(NewUserHandler(users, nil), nil, verifier)
+	router := NewRouter(NewUserHandler(users, nil), nil, nil, verifier)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
 	req.Header.Set("Authorization", "Bearer access-token")
@@ -100,7 +101,7 @@ func TestNewRouterProtectsCreateConversationRoute(t *testing.T) {
 	verifier := &fakeTokenVerifier{}
 	router := NewRouter(
 		NewUserHandler(&fakeUserRegistrar{}, nil),
-		NewConversationHandler(service),
+		NewConversationHandler(service), nil,
 		verifier,
 	)
 	recorder := httptest.NewRecorder()
@@ -130,7 +131,7 @@ func TestNewRouterCreatesConversationForAuthenticatedUser(t *testing.T) {
 	verifier := &fakeTokenVerifier{userID: 7}
 	router := NewRouter(
 		NewUserHandler(&fakeUserRegistrar{}, nil),
-		NewConversationHandler(service),
+		NewConversationHandler(service), nil,
 		verifier,
 	)
 	recorder := httptest.NewRecorder()
@@ -158,7 +159,7 @@ func TestNewRouterProtectsConversationListRoute(t *testing.T) {
 	verifier := &fakeTokenVerifier{}
 	router := NewRouter(
 		NewUserHandler(&fakeUserRegistrar{}, nil),
-		NewConversationHandler(service),
+		NewConversationHandler(service), nil,
 		verifier,
 	)
 	recorder := httptest.NewRecorder()
@@ -177,7 +178,7 @@ func TestNewRouterListsConversationsForAuthenticatedUser(t *testing.T) {
 	verifier := &fakeTokenVerifier{userID: 7}
 	router := NewRouter(
 		NewUserHandler(&fakeUserRegistrar{}, nil),
-		NewConversationHandler(service),
+		NewConversationHandler(service), nil,
 		verifier,
 	)
 	recorder := httptest.NewRecorder()
@@ -202,7 +203,7 @@ func TestNewRouterProtectsConversationDetailRoute(t *testing.T) {
 	verifier := &fakeTokenVerifier{}
 	router := NewRouter(
 		NewUserHandler(&fakeUserRegistrar{}, nil),
-		NewConversationHandler(service),
+		NewConversationHandler(service), nil,
 		verifier,
 	)
 	recorder := httptest.NewRecorder()
@@ -225,7 +226,7 @@ func TestNewRouterGetsConversationForAuthenticatedUser(t *testing.T) {
 	verifier := &fakeTokenVerifier{userID: 7}
 	router := NewRouter(
 		NewUserHandler(&fakeUserRegistrar{}, nil),
-		NewConversationHandler(service),
+		NewConversationHandler(service), nil,
 		verifier,
 	)
 	recorder := httptest.NewRecorder()
@@ -250,7 +251,7 @@ func TestNewRouterProtectsConversationDeleteRoute(t *testing.T) {
 	verifier := &fakeTokenVerifier{}
 	router := NewRouter(
 		NewUserHandler(&fakeUserRegistrar{}, nil),
-		NewConversationHandler(service),
+		NewConversationHandler(service), nil,
 		verifier,
 	)
 	recorder := httptest.NewRecorder()
@@ -269,7 +270,7 @@ func TestNewRouterDeletesConversationForAuthenticatedUser(t *testing.T) {
 	verifier := &fakeTokenVerifier{userID: 7}
 	router := NewRouter(
 		NewUserHandler(&fakeUserRegistrar{}, nil),
-		NewConversationHandler(service),
+		NewConversationHandler(service), nil,
 		verifier,
 	)
 	recorder := httptest.NewRecorder()
@@ -289,6 +290,100 @@ func TestNewRouterDeletesConversationForAuthenticatedUser(t *testing.T) {
 	}
 }
 
+func TestNewRouterProtectsMessageRoutes(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		body   string
+	}{
+		{name: "create", method: http.MethodPost, body: `{"content":"hello"}`},
+		{name: "list", method: http.MethodGet},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &fakeMessageService{}
+			verifier := &fakeTokenVerifier{}
+			router := NewRouter(
+				NewUserHandler(&fakeUserRegistrar{}, nil),
+				nil,
+				NewMessageHandler(service),
+				verifier,
+			)
+			recorder := httptest.NewRecorder()
+			req := httptest.NewRequest(tt.method, "/api/v1/conversations/9/messages", strings.NewReader(tt.body))
+			if tt.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+
+			router.ServeHTTP(recorder, req)
+
+			assertErrorResponse(t, recorder, http.StatusUnauthorized, "UNAUTHORIZED")
+			if verifier.calls != 0 || service.createCalls != 0 || service.listCalls != 0 {
+				t.Fatalf("calls without credentials: Verify = %d, Create = %d, List = %d; want all 0", verifier.calls, service.createCalls, service.listCalls)
+			}
+		})
+	}
+}
+
+func TestNewRouterCreatesMessageForAuthenticatedUser(t *testing.T) {
+	service := &fakeMessageService{created: &message.Message{
+		ID:             42,
+		ConversationID: 9,
+		Role:           message.RoleUser,
+		Content:        "hello",
+	}}
+	verifier := &fakeTokenVerifier{userID: 7}
+	router := NewRouter(
+		NewUserHandler(&fakeUserRegistrar{}, nil),
+		nil,
+		NewMessageHandler(service),
+		verifier,
+	)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/messages", strings.NewReader(`{"content":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer access-token")
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	if verifier.calls != 1 || verifier.token != "access-token" {
+		t.Fatalf("Verify() = %d calls with %q, want 1 call with %q", verifier.calls, verifier.token, "access-token")
+	}
+	if service.createCalls != 1 || service.createUser != 7 || service.createConv != 9 {
+		t.Fatalf("CreateUserMessage() = %d calls with user ID %d and conversation ID %d", service.createCalls, service.createUser, service.createConv)
+	}
+}
+
+func TestNewRouterListsMessagesForAuthenticatedUser(t *testing.T) {
+	service := &fakeMessageService{listed: []*message.Message{}}
+	verifier := &fakeTokenVerifier{userID: 7}
+	router := NewRouter(
+		NewUserHandler(&fakeUserRegistrar{}, nil),
+		nil,
+		NewMessageHandler(service),
+		verifier,
+	)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations/9/messages?page=2&page_size=10", nil)
+	req.Header.Set("Authorization", "Bearer access-token")
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if verifier.calls != 1 || verifier.token != "access-token" {
+		t.Fatalf("Verify() = %d calls with %q, want 1 call with %q", verifier.calls, verifier.token, "access-token")
+	}
+	if service.listCalls != 1 || service.listUser != 7 || service.listConv != 9 || service.page != 2 || service.pageSize != 10 {
+		t.Fatalf("List() = %d calls with user ID %d, conversation ID %d, page %d, page size %d", service.listCalls, service.listUser, service.listConv, service.page, service.pageSize)
+	}
+}
+
 type panicUserRegistrar struct{}
 
 func (panicUserRegistrar) Register(context.Context, string, string) (*user.User, error) {
@@ -305,7 +400,7 @@ func (panicUserRegistrar) GetByID(ctx context.Context, userID uint64) (*user.Use
 }
 
 func TestNewRouterRecoversFromHandlerPanic(t *testing.T) {
-	router := NewRouter(NewUserHandler(panicUserRegistrar{}, nil), nil, nil)
+	router := NewRouter(NewUserHandler(panicUserRegistrar{}, nil), nil, nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),

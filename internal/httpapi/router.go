@@ -9,6 +9,7 @@ import (
 func NewRouter(
 	userHandler *UserHandler,
 	conversationHandler *ConversationHandler,
+	messageHandler *MessageHandler,
 	tokens TokenVerifier,
 ) *gin.Engine {
 	router := gin.Default()
@@ -28,5 +29,8 @@ func NewRouter(
 	authenticated.GET("/conversations", conversationHandler.List)
 	authenticated.GET("/conversations/:id", conversationHandler.GetByID)
 	authenticated.DELETE("/conversations/:id", conversationHandler.Delete)
+
+	authenticated.GET("/conversations/:id/messages", messageHandler.List)
+	authenticated.POST("/conversations/:id/messages", messageHandler.CreateUserMessage)
 	return router
 }

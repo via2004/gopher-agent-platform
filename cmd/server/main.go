@@ -16,6 +16,7 @@ import (
 	"gopherai/internal/auth"
 	"gopherai/internal/conversation"
 	"gopherai/internal/httpapi"
+	"gopherai/internal/message"
 	platform "gopherai/internal/platform/postgresql"
 	"gopherai/internal/user"
 )
@@ -61,7 +62,9 @@ func run() error {
 	conversationService := conversation.NewService(platform.NewConversationRepository(pool))
 	conversationHandler := httpapi.NewConversationHandler(conversationService)
 
-	router := httpapi.NewRouter(userHandler, conversationHandler, tokenManager)
+	messageService := message.NewService(platform.NewMessageRepository(pool))
+	messageHandler := httpapi.NewMessageHandler(messageService)
+	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, tokenManager)
 
 	server := &http.Server{
 		Addr:           IPAddr + Port,
