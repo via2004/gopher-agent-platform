@@ -13,10 +13,12 @@ const (
 )
 
 var (
-	ErrInvalidUserID   = errors.New("user ID is invalid")
-	ErrInvalidPage     = errors.New("page is invalid")
-	ErrInvalidPageSize = errors.New("page size is invalid")
-	ErrInvalidTitle    = errors.New("conversation title is invalid")
+	ErrInvalidUserID         = errors.New("user ID is invalid")
+	ErrInvalidPage           = errors.New("page is invalid")
+	ErrInvalidPageSize       = errors.New("page size is invalid")
+	ErrInvalidTitle          = errors.New("conversation title is invalid")
+	ErrConversationNotFound  = errors.New("conversation not found")
+	ErrInvalidConversationID = errors.New("conversation ID is invalid")
 )
 
 type Service struct {
@@ -68,4 +70,32 @@ func (s *Service) List(ctx context.Context, userID uint64, page, pageSize int) (
 	}
 
 	return conversations, nil
+}
+
+func (s *Service) GetByID(ctx context.Context, userID, conversationID uint64) (*Conversation, error) {
+	if userID == 0 {
+		return nil, ErrInvalidUserID
+	}
+	if conversationID == 0 {
+		return nil, ErrInvalidConversationID
+	}
+
+	conversation, err := s.conversations.GetByIDAndUserID(ctx, userID, conversationID)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return conversation, nil
+}
+
+func (s *Service) Delete(ctx context.Context, userID uint64, conversationID uint64) error {
+	if userID == 0 {
+		return ErrInvalidUserID
+	}
+	if conversationID == 0 {
+		return ErrInvalidConversationID
+	}
+
+	return s.conversations.DeleteByIDAndUserID(ctx, userID, conversationID)
 }

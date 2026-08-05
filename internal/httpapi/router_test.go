@@ -197,6 +197,98 @@ func TestNewRouterListsConversationsForAuthenticatedUser(t *testing.T) {
 	}
 }
 
+func TestNewRouterProtectsConversationDetailRoute(t *testing.T) {
+	service := &fakeConversationService{}
+	verifier := &fakeTokenVerifier{}
+	router := NewRouter(
+		NewUserHandler(&fakeUserRegistrar{}, nil),
+		NewConversationHandler(service),
+		verifier,
+	)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations/42", nil)
+
+	router.ServeHTTP(recorder, req)
+
+	assertErrorResponse(t, recorder, http.StatusUnauthorized, "UNAUTHORIZED")
+	if verifier.calls != 0 || service.getCalls != 0 {
+		t.Fatalf("calls without credentials: Verify = %d, GetByID = %d; want both 0", verifier.calls, service.getCalls)
+	}
+}
+
+func TestNewRouterGetsConversationForAuthenticatedUser(t *testing.T) {
+	service := &fakeConversationService{found: &conversation.Conversation{
+		ID:     42,
+		UserID: 7,
+		Title:  "Go and AI",
+	}}
+	verifier := &fakeTokenVerifier{userID: 7}
+	router := NewRouter(
+		NewUserHandler(&fakeUserRegistrar{}, nil),
+		NewConversationHandler(service),
+		verifier,
+	)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations/42", nil)
+	req.Header.Set("Authorization", "Bearer access-token")
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if verifier.calls != 1 || verifier.token != "access-token" {
+		t.Fatalf("Verify() = %d calls with %q, want 1 call with %q", verifier.calls, verifier.token, "access-token")
+	}
+	if service.getCalls != 1 || service.getUserID != 7 || service.getID != 42 {
+		t.Fatalf("GetByID() = %d calls with user ID %d and conversation ID %d", service.getCalls, service.getUserID, service.getID)
+	}
+}
+
+func TestNewRouterProtectsConversationDeleteRoute(t *testing.T) {
+	service := &fakeConversationService{}
+	verifier := &fakeTokenVerifier{}
+	router := NewRouter(
+		NewUserHandler(&fakeUserRegistrar{}, nil),
+		NewConversationHandler(service),
+		verifier,
+	)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/conversations/42", nil)
+
+	router.ServeHTTP(recorder, req)
+
+	assertErrorResponse(t, recorder, http.StatusUnauthorized, "UNAUTHORIZED")
+	if verifier.calls != 0 || service.deleteCalls != 0 {
+		t.Fatalf("calls without credentials: Verify = %d, Delete = %d; want both 0", verifier.calls, service.deleteCalls)
+	}
+}
+
+func TestNewRouterDeletesConversationForAuthenticatedUser(t *testing.T) {
+	service := &fakeConversationService{}
+	verifier := &fakeTokenVerifier{userID: 7}
+	router := NewRouter(
+		NewUserHandler(&fakeUserRegistrar{}, nil),
+		NewConversationHandler(service),
+		verifier,
+	)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/conversations/42", nil)
+	req.Header.Set("Authorization", "Bearer access-token")
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNoContent, recorder.Body.String())
+	}
+	if verifier.calls != 1 || verifier.token != "access-token" {
+		t.Fatalf("Verify() = %d calls with %q, want 1 call with %q", verifier.calls, verifier.token, "access-token")
+	}
+	if service.deleteCalls != 1 || service.deleteUserID != 7 || service.deleteID != 42 {
+		t.Fatalf("Delete() = %d calls with user ID %d and conversation ID %d", service.deleteCalls, service.deleteUserID, service.deleteID)
+	}
+}
+
 type panicUserRegistrar struct{}
 
 func (panicUserRegistrar) Register(context.Context, string, string) (*user.User, error) {

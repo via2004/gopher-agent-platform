@@ -4,6 +4,7 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -106,6 +107,36 @@ func TestConversationRepositoryCreate(t *testing.T) {
 	}
 	if len(secondPage) != 1 || secondPage[0].ID != created.ID {
 		t.Fatalf("second page IDs = %v, want [%d]", conversationIDs(secondPage), created.ID)
+	}
+
+	found, err := repo.GetByIDAndUserID(ctx, userID, created.ID)
+	if err != nil {
+		t.Fatalf("GetByIDAndUserID() error = %v", err)
+	}
+	if found.ID != created.ID || found.UserID != userID || found.Title != created.Title {
+		t.Errorf("GetByIDAndUserID() conversation = %#v, want %#v", found, created)
+	}
+	if _, err := repo.GetByIDAndUserID(ctx, otherUserID, created.ID); !errors.Is(err, conversation.ErrConversationNotFound) {
+		t.Fatalf("other user's GetByIDAndUserID() error = %v, want %v", err, conversation.ErrConversationNotFound)
+	}
+	if _, err := repo.GetByIDAndUserID(ctx, userID, uint64(1<<63-1)); !errors.Is(err, conversation.ErrConversationNotFound) {
+		t.Fatalf("missing GetByIDAndUserID() error = %v, want %v", err, conversation.ErrConversationNotFound)
+	}
+
+	if err := repo.DeleteByIDAndUserID(ctx, otherUserID, created.ID); !errors.Is(err, conversation.ErrConversationNotFound) {
+		t.Fatalf("other user's DeleteByIDAndUserID() error = %v, want %v", err, conversation.ErrConversationNotFound)
+	}
+	if _, err := repo.GetByIDAndUserID(ctx, userID, created.ID); err != nil {
+		t.Fatalf("GetByIDAndUserID() after other user's delete error = %v", err)
+	}
+	if err := repo.DeleteByIDAndUserID(ctx, userID, created.ID); err != nil {
+		t.Fatalf("DeleteByIDAndUserID() error = %v", err)
+	}
+	if _, err := repo.GetByIDAndUserID(ctx, userID, created.ID); !errors.Is(err, conversation.ErrConversationNotFound) {
+		t.Fatalf("GetByIDAndUserID() after delete error = %v, want %v", err, conversation.ErrConversationNotFound)
+	}
+	if err := repo.DeleteByIDAndUserID(ctx, userID, created.ID); !errors.Is(err, conversation.ErrConversationNotFound) {
+		t.Fatalf("repeated DeleteByIDAndUserID() error = %v, want %v", err, conversation.ErrConversationNotFound)
 	}
 }
 

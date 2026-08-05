@@ -26,5 +26,7 @@ func NewRouter(
 	authenticated.GET("/users/me", userHandler.Me)
 	authenticated.POST("/conversations", conversationHandler.Create)
 	authenticated.GET("/conversations", conversationHandler.List)
+	authenticated.GET("/conversations/:id", conversationHandler.GetByID)
+	authenticated.DELETE("/conversations/:id", conversationHandler.Delete)
 	return router
 }
