@@ -87,6 +87,20 @@ func TestMessageRepository(t *testing.T) {
 	if len(secondPage) != 1 || secondPage[0].ID != second.ID || secondPage[0].Role != message.RoleAssistant {
 		t.Fatalf("second page = %#v, want message %d", secondPage, second.ID)
 	}
+	recent, err := repo.ListRecentByConversationID(ctx, userID, ownedConversation.ID, 1)
+	if err != nil {
+		t.Fatalf("ListRecentByConversationID() one-message error = %v", err)
+	}
+	if len(recent) != 1 || recent[0].ID != second.ID {
+		t.Fatalf("recent messages = %#v, want latest message %d", recent, second.ID)
+	}
+	recent, err = repo.ListRecentByConversationID(ctx, userID, ownedConversation.ID, 2)
+	if err != nil {
+		t.Fatalf("ListRecentByConversationID() two-message error = %v", err)
+	}
+	if len(recent) != 2 || recent[0].ID != first.ID || recent[1].ID != second.ID {
+		t.Fatalf("recent messages order = %v, want [%d %d]", messageIDs(recent), first.ID, second.ID)
+	}
 
 	empty, err := repo.ListByConversationID(ctx, userID, emptyConversation.ID, 20, 0)
 	if err != nil {
@@ -124,4 +138,12 @@ func createMessageTestUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool
 		t.Fatalf("create %s test user: %v", label, err)
 	}
 	return userID
+}
+
+func messageIDs(messages []*message.Message) []uint64 {
+	ids := make([]uint64, 0, len(messages))
+	for _, item := range messages {
+		ids = append(ids, item.ID)
+	}
+	return ids
 }

@@ -10,4 +10,6 @@ type MessageRepository interface {
 		conversationID uint64,
 		limit, offset int,
 	) ([]*Message, error)
+	ListRecentByConversationID(ctx context.Context, userID uint64,
+		conversationID uint64, limit int) ([]*Message, error)
 }

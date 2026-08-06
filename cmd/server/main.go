@@ -14,8 +14,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gopherai/internal/auth"
+	"gopherai/internal/chat"
 	"gopherai/internal/conversation"
 	"gopherai/internal/httpapi"
+	"gopherai/internal/llm"
 	"gopherai/internal/message"
 	platform "gopherai/internal/platform/postgresql"
 	"gopherai/internal/user"
@@ -64,7 +66,11 @@ func run() error {
 
 	messageService := message.NewService(platform.NewMessageRepository(pool))
 	messageHandler := httpapi.NewMessageHandler(messageService)
-	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, tokenManager)
+
+	chatService := chat.NewService(messageService, llm.UnavailableClient{})
+	chatHandler := httpapi.NewChatHandler(chatService)
+
+	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler, tokenManager)
 
 	server := &http.Server{
 		Addr:           IPAddr + Port,

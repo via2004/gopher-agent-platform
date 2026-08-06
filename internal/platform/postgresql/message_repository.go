@@ -66,6 +66,37 @@ func (r *MessageRepository) ListByConversationID(ctx context.Context,
 	return result, nil
 }
 
+func (r *MessageRepository) ListRecentByConversationID(ctx context.Context, userID uint64,
+	conversationID uint64, limit int) ([]*message.Message, error) {
+	if err := r.checkConversationExistence(ctx, userID, conversationID); err != nil {
+		return nil, err
+	}
+
+	rows, err := r.pool.Query(ctx, QueryRecentMessagesByConversationIDAndUserID,
+		userID, conversationID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query rows: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]*message.Message, 0)
+	for rows.Next() {
+		message := &message.Message{}
+		if err := rows.Scan(&message.ID, &message.ConversationID, &message.Role,
+			&message.Content, &message.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+
+		result = append(result, message)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate messages: %w", err)
+	}
+
+	return result, nil
+}
+
 func (r *MessageRepository) checkConversationExistence(ctx context.Context, userID uint64, conversationID uint64) error {
 	foundConversation := conversation.Conversation{}
 	err := r.pool.QueryRow(ctx, GetConversationByIDAndUserID, conversationID, userID).

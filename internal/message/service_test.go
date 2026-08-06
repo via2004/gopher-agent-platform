@@ -24,6 +24,13 @@ type fakeMessageRepository struct {
 	listOffset  int
 	listed      []*Message
 	listErr     error
+	recentCalls int
+	recentCtx   context.Context
+	recentUser  uint64
+	recentConv  uint64
+	recentLimit int
+	recent      []*Message
+	recentErr   error
 }
 
 func (f *fakeMessageRepository) Create(ctx context.Context, userID uint64, message *Message) error {
@@ -51,6 +58,15 @@ func (f *fakeMessageRepository) ListByConversationID(
 	f.listLimit = limit
 	f.listOffset = offset
 	return f.listed, f.listErr
+}
+func (f *fakeMessageRepository) ListRecentByConversationID(ctx context.Context, userID uint64,
+	conversationID uint64, limit int) ([]*Message, error) {
+	f.recentCalls++
+	f.recentCtx = ctx
+	f.recentUser = userID
+	f.recentConv = conversationID
+	f.recentLimit = limit
+	return f.recent, f.recentErr
 }
 
 func TestServiceCreateUserMessage(t *testing.T) {
@@ -139,6 +155,19 @@ func TestServiceCreateUserMessageReturnsRepositoryError(t *testing.T) {
 	}
 }
 
+func TestServiceCreateAssistantMessage(t *testing.T) {
+	repo := &fakeMessageRepository{}
+	service := NewService(repo)
+
+	created, err := service.CreateAssistantMessage(context.Background(), 7, 9, "  model response  ")
+	if err != nil {
+		t.Fatalf("CreateAssistantMessage() error = %v", err)
+	}
+	if created != repo.created || created.Role != RoleAssistant || created.Content != "model response" {
+		t.Fatalf("created assistant message = %#v", created)
+	}
+}
+
 func TestServiceList(t *testing.T) {
 	want := []*Message{{ID: 1}, {ID: 2}}
 	repo := &fakeMessageRepository{listed: want}
@@ -220,5 +249,74 @@ func TestServiceListReturnsRepositoryError(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("List() messages = %#v, want nil", got)
+	}
+}
+
+func TestServiceListRecent(t *testing.T) {
+	want := []*Message{{ID: 2}, {ID: 3}}
+	repo := &fakeMessageRepository{recent: want}
+	service := NewService(repo)
+	type contextKey string
+	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
+
+	got, err := service.ListRecent(ctx, 7, 9, 40)
+	if err != nil {
+		t.Fatalf("ListRecent() error = %v", err)
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("ListRecent() messages = %#v, want %#v", got, want)
+	}
+	if repo.recentCalls != 1 || repo.recentUser != 7 || repo.recentConv != 9 || repo.recentLimit != 40 {
+		t.Fatalf("ListRecentByConversationID() = %d calls with user ID %d, conversation ID %d, limit %d", repo.recentCalls, repo.recentUser, repo.recentConv, repo.recentLimit)
+	}
+	if repo.recentCtx != ctx {
+		t.Fatal("ListRecent() did not pass its context to the repository")
+	}
+}
+
+func TestServiceListRecentRejectsInvalidInput(t *testing.T) {
+	tests := []struct {
+		name           string
+		userID         uint64
+		conversationID uint64
+		limit          int
+		wantErr        error
+	}{
+		{name: "zero user ID", conversationID: 9, limit: 40, wantErr: conversation.ErrInvalidUserID},
+		{name: "zero conversation ID", userID: 7, limit: 40, wantErr: ErrInvalidConversationID},
+		{name: "zero limit", userID: 7, conversationID: 9, wantErr: ErrInvalidLimit},
+		{name: "negative limit", userID: 7, conversationID: 9, limit: -1, wantErr: ErrInvalidLimit},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeMessageRepository{}
+			service := NewService(repo)
+
+			got, err := service.ListRecent(context.Background(), tt.userID, tt.conversationID, tt.limit)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("ListRecent() error = %v, want %v", err, tt.wantErr)
+			}
+			if got != nil {
+				t.Fatalf("ListRecent() messages = %#v, want nil", got)
+			}
+			if repo.recentCalls != 0 {
+				t.Fatalf("ListRecentByConversationID() calls = %d, want 0", repo.recentCalls)
+			}
+		})
+	}
+}
+
+func TestServiceListRecentReturnsRepositoryError(t *testing.T) {
+	repoErr := errors.New("query recent messages")
+	repo := &fakeMessageRepository{recentErr: repoErr}
+	service := NewService(repo)
+
+	got, err := service.ListRecent(context.Background(), 7, 9, 40)
+	if !errors.Is(err, repoErr) {
+		t.Fatalf("ListRecent() error = %v, want %v", err, repoErr)
+	}
+	if got != nil {
+		t.Fatalf("ListRecent() messages = %#v, want nil", got)
 	}
 }
