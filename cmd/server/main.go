@@ -8,10 +8,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
 
 	"gopherai/internal/auth"
 	"gopherai/internal/chat"
@@ -19,6 +22,7 @@ import (
 	"gopherai/internal/httpapi"
 	"gopherai/internal/llm"
 	"gopherai/internal/message"
+	openaiplatform "gopherai/internal/platform/openai"
 	platform "gopherai/internal/platform/postgresql"
 	"gopherai/internal/user"
 )
@@ -31,6 +35,10 @@ const (
 )
 
 func run() error {
+	if err := loadEnvironment(); err != nil {
+		return err
+	}
+
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		return errors.New("databaseURL is empty!")
@@ -67,7 +75,11 @@ func run() error {
 	messageService := message.NewService(platform.NewMessageRepository(pool))
 	messageHandler := httpapi.NewMessageHandler(messageService)
 
-	chatService := chat.NewService(messageService, llm.UnavailableClient{})
+	modelClient, err := buildLLMClient()
+	if err != nil {
+		return err
+	}
+	chatService := chat.NewService(messageService, modelClient)
 	chatHandler := httpapi.NewChatHandler(chatService)
 
 	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler, tokenManager)
@@ -107,6 +119,65 @@ func run() error {
 	}
 
 	return nil
+}
+
+func buildLLMClient() (llm.Client, error) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	model := os.Getenv("OPENAI_MODEL")
+	baseURL := os.Getenv("OPENAI_BASE_URL")
+	wireAPI := envOrDefault("OPENAI_WIRE_API", "responses")
+	requiresAuth, err := envBool("OPENAI_REQUIRES_AUTH", true)
+	if err != nil {
+		return nil, err
+	}
+	disableStorage, err := envBool("OPENAI_DISABLE_RESPONSE_STORAGE", true)
+	if err != nil {
+		return nil, err
+	}
+	reasoningEffort := envOrDefault("OPENAI_REASONING_EFFORT", "low")
+	if apiKey == "" && model == "" && baseURL == "" {
+		return llm.UnavailableClient{}, nil
+	}
+
+	client, err := openaiplatform.NewClientWithConfig(openaiplatform.Config{
+		APIKey:                 apiKey,
+		Model:                  model,
+		BaseURL:                baseURL,
+		WireAPI:                wireAPI,
+		RequiresAuth:           requiresAuth,
+		ReasoningEffort:        reasoningEffort,
+		DisableResponseStorage: disableStorage,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("new OpenAI client: %w", err)
+	}
+	return client, nil
+}
+
+func loadEnvironment() error {
+	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load .env: %w", err)
+	}
+	return nil
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envBool(name string, fallback bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("parse %s: %w", name, err)
+	}
+	return parsed, nil
 }
 
 func main() {
