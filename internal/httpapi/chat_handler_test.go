@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,6 +26,10 @@ type fakeChatService struct {
 	content        string
 	response       *message.Message
 	err            error
+	streamCalls    int
+	streamDeltas   []string
+	streamResponse *message.Message
+	streamErr      error
 }
 
 func (f *fakeChatService) ReceiveAndResponse(
@@ -41,6 +46,22 @@ func (f *fakeChatService) ReceiveAndResponse(
 	return f.response, f.err
 }
 
+func (f *fakeChatService) ChatStreaming(ctx context.Context, userID uint64,
+	conversationID uint64, content string,
+	onDelta func(string) error) (*message.Message, error) {
+	f.streamCalls++
+	f.ctx = ctx
+	f.userID = userID
+	f.conversationID = conversationID
+	f.content = content
+	for _, delta := range f.streamDeltas {
+		if err := onDelta(delta); err != nil {
+			return nil, err
+		}
+	}
+	return f.streamResponse, f.streamErr
+}
+
 func newChatHandlerTestRouter(service ChatService, userID any, setUserID bool) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -50,7 +71,33 @@ func newChatHandlerTestRouter(service ChatService, userID any, setUserID bool) *
 		}
 		c.Next()
 	}, NewChatHandler(service).Chat)
+	router.POST("/api/v1/conversations/:id/chat/stream", func(c *gin.Context) {
+		if setUserID {
+			c.Set(userIDContextKey, userID)
+		}
+		c.Next()
+	}, NewChatHandler(service).ChatStreaming)
 	return router
+}
+
+type chatContextKey string
+
+func assertChatContext(t *testing.T, ctx context.Context, key chatContextKey, wantValue string) {
+	t.Helper()
+	if ctx == nil {
+		t.Fatal("Chat Service received a nil context")
+	}
+	if got := ctx.Value(key); got != wantValue {
+		t.Fatalf("context value = %v, want %q", got, wantValue)
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("Chat Service context has no deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 || remaining > streamMaxDuration {
+		t.Fatalf("context deadline remaining = %v, want within (0, %v]", remaining, streamMaxDuration)
+	}
 }
 
 func TestChatHandlerChat(t *testing.T) {
@@ -63,8 +110,8 @@ func TestChatHandlerChat(t *testing.T) {
 		CreatedAt:      createdAt,
 	}}
 	router := newChatHandlerTestRouter(service, uint64(7), true)
-	type contextKey string
-	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
+	key := chatContextKey("request-id")
+	ctx := context.WithValue(context.Background(), key, "request-1")
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/chat", strings.NewReader(`{"content":"What is an interface?"}`)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
@@ -77,9 +124,7 @@ func TestChatHandlerChat(t *testing.T) {
 	if service.calls != 1 || service.userID != 7 || service.conversationID != 9 || service.content != "What is an interface?" {
 		t.Fatalf("ReceiveAndResponse() = %d calls with user ID %d, conversation ID %d, content %q", service.calls, service.userID, service.conversationID, service.content)
 	}
-	if service.ctx != ctx {
-		t.Fatal("handler did not pass the request context to Chat Service")
-	}
+	assertChatContext(t, service.ctx, key, "request-1")
 	var response messageResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -157,6 +202,7 @@ func TestChatHandlerMapsServiceErrors(t *testing.T) {
 		{name: "invalid user ID", err: conversation.ErrInvalidUserID, wantStatus: http.StatusBadRequest, wantCode: "INVALID_REQUEST"},
 		{name: "conversation not found", err: conversation.ErrConversationNotFound, wantStatus: http.StatusNotFound, wantCode: "NOT_FOUND"},
 		{name: "LLM unavailable", err: llm.ErrNotConfigured, wantStatus: http.StatusServiceUnavailable, wantCode: "SERVICE_UNAVAILABLE"},
+		{name: "timeout", err: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantCode: "TIMEOUT"},
 		{name: "unknown failure", err: errors.New("database unavailable"), wantStatus: http.StatusInternalServerError, wantCode: "INTERNAL_SERVER_ERROR"},
 	}
 
@@ -173,6 +219,125 @@ func TestChatHandlerMapsServiceErrors(t *testing.T) {
 			assertErrorResponse(t, recorder, tt.wantStatus, tt.wantCode)
 			if service.calls != 1 {
 				t.Fatalf("ReceiveAndResponse() calls = %d, want 1", service.calls)
+			}
+		})
+	}
+}
+
+func TestChatHandlerChatStreaming(t *testing.T) {
+	createdAt := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
+	service := &fakeChatService{
+		streamDeltas: []string{"An interface", " describes behavior."},
+		streamResponse: &message.Message{
+			ID:        42,
+			Role:      message.RoleAssistant,
+			CreatedAt: createdAt,
+		},
+	}
+	router := newChatHandlerTestRouter(service, uint64(7), true)
+	key := chatContextKey("request-id")
+	ctx := context.WithValue(context.Background(), key, "request-1")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/chat/stream", strings.NewReader(`{"content":"What is an interface?"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	mediaType, _, err := mime.ParseMediaType(recorder.Header().Get("Content-Type"))
+	if err != nil || mediaType != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want SSE; parse error = %v", recorder.Header().Get("Content-Type"), err)
+	}
+	if service.streamCalls != 1 || service.userID != 7 || service.conversationID != 9 || service.content != "What is an interface?" {
+		t.Fatalf("ChatStreaming() = %d calls with user ID %d, conversation ID %d, content %q", service.streamCalls, service.userID, service.conversationID, service.content)
+	}
+	assertChatContext(t, service.ctx, key, "request-1")
+	body := recorder.Body.String()
+	for _, want := range []string{
+		"event:delta\ndata:{\"delta\":\"An interface\"}\n\n",
+		"event:delta\ndata:{\"delta\":\" describes behavior.\"}\n\n",
+		"event:done\n",
+		`"id":42`,
+		`"role":"assistant"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("SSE response does not contain %q; body = %q", want, body)
+		}
+	}
+	if strings.Index(body, "event:delta") > strings.Index(body, "event:done") {
+		t.Fatalf("done event was written before delta events; body = %q", body)
+	}
+}
+
+func TestChatHandlerChatStreamingRejectsInvalidRequest(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		userID     any
+		setUserID  bool
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "missing user ID", path: "/api/v1/conversations/9/chat/stream", body: `{"content":"hello"}`, wantStatus: http.StatusUnauthorized, wantCode: "UNAUTHORIZED"},
+		{name: "invalid JSON", path: "/api/v1/conversations/9/chat/stream", body: `{"content":`, userID: uint64(7), setUserID: true, wantStatus: http.StatusBadRequest, wantCode: "INVALID_REQUEST"},
+		{name: "invalid conversation ID", path: "/api/v1/conversations/not-a-number/chat/stream", body: `{"content":"hello"}`, userID: uint64(7), setUserID: true, wantStatus: http.StatusBadRequest, wantCode: "INVALID_REQUEST"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &fakeChatService{}
+			router := newChatHandlerTestRouter(service, tt.userID, tt.setUserID)
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, req)
+
+			assertErrorResponse(t, recorder, tt.wantStatus, tt.wantCode)
+			if service.streamCalls != 0 {
+				t.Fatalf("ChatStreaming() calls = %d, want 0", service.streamCalls)
+			}
+		})
+	}
+}
+
+func TestChatHandlerChatStreamingMapsServiceErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{name: "invalid content", err: message.ErrInvalidContent, wantCode: "INVALID_REQUEST"},
+		{name: "conversation not found", err: conversation.ErrConversationNotFound, wantCode: "NOT_FOUND"},
+		{name: "LLM unavailable", err: llm.ErrNotConfigured, wantCode: "SERVICE_UNAVAILABLE"},
+		{name: "incomplete response", err: llm.ErrResponseNotCompleted, wantCode: "RESPONSE_NOT_COMPLETED"},
+		{name: "timeout", err: context.DeadlineExceeded, wantCode: "TIMEOUT"},
+		{name: "provider failure", err: llm.ErrResponseFailed, wantCode: "RESPONSE_FAILED"},
+		{name: "unknown failure", err: errors.New("database unavailable"), wantCode: "INTERNAL_SERVER_ERROR"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &fakeChatService{streamErr: tt.err}
+			router := newChatHandlerTestRouter(service, uint64(7), true)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/chat/stream", strings.NewReader(`{"content":"hello"}`))
+			req.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, req)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+			}
+			body := recorder.Body.String()
+			if !strings.Contains(body, "event:error\n") || !strings.Contains(body, `"code":"`+tt.wantCode+`"`) {
+				t.Fatalf("SSE error response = %q, want code %q", body, tt.wantCode)
+			}
+			if strings.Contains(body, "event:done\n") {
+				t.Fatalf("SSE error response contains done event: %q", body)
 			}
 		})
 	}

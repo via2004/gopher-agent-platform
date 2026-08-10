@@ -79,7 +79,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	chatService := chat.NewService(messageService, modelClient)
+
+	chatService := chat.NewService(messageService, modelClient, modelClient)
 	chatHandler := httpapi.NewChatHandler(chatService)
 
 	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler, tokenManager)
@@ -121,7 +122,7 @@ func run() error {
 	return nil
 }
 
-func buildLLMClient() (llm.Client, error) {
+func buildLLMClient() (llm.ModelClient, error) {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	model := os.Getenv("OPENAI_MODEL")
 	baseURL := os.Getenv("OPENAI_BASE_URL")

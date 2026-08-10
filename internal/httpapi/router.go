@@ -34,5 +34,6 @@ func NewRouter(
 	authenticated.GET("/conversations/:id/messages", messageHandler.List)
 	authenticated.POST("/conversations/:id/messages", messageHandler.CreateUserMessage)
 	authenticated.POST("/conversations/:id/chat", chatHandler.Chat)
+	authenticated.POST("/conversations/:id/chat/stream", chatHandler.ChatStreaming)
 	return router
 }

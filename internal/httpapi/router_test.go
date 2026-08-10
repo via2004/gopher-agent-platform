@@ -439,6 +439,44 @@ func TestNewRouterServesChatForAuthenticatedUser(t *testing.T) {
 	}
 }
 
+func TestNewRouterServesStreamingChatForAuthenticatedUser(t *testing.T) {
+	service := &fakeChatService{
+		streamDeltas: []string{"answer"},
+		streamResponse: &message.Message{
+			ID:             42,
+			ConversationID: 9,
+			Role:           message.RoleAssistant,
+		},
+	}
+	verifier := &fakeTokenVerifier{userID: 7}
+	router := NewRouter(
+		NewUserHandler(&fakeUserRegistrar{}, nil),
+		nil,
+		nil,
+		NewChatHandler(service),
+		verifier,
+	)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/chat/stream", strings.NewReader(`{"content":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer access-token")
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if verifier.calls != 1 || verifier.token != "access-token" {
+		t.Fatalf("Verify() = %d calls with %q, want 1 call with %q", verifier.calls, verifier.token, "access-token")
+	}
+	if service.streamCalls != 1 || service.userID != 7 || service.conversationID != 9 || service.content != "hello" {
+		t.Fatalf("ChatStreaming() = %d calls with user ID %d, conversation ID %d, content %q", service.streamCalls, service.userID, service.conversationID, service.content)
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "event:delta\n") || !strings.Contains(body, "event:done\n") {
+		t.Fatalf("SSE response = %q, want delta and done events", body)
+	}
+}
+
 type panicUserRegistrar struct{}
 
 func (panicUserRegistrar) Register(context.Context, string, string) (*user.User, error) {

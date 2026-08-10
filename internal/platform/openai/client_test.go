@@ -110,3 +110,76 @@ func TestClientGenerateReturnsProviderError(t *testing.T) {
 		t.Fatalf("Generate() error = %v, want wrapped provider error", err)
 	}
 }
+
+func TestClientGenerateStreamUsesResponsesAPI(t *testing.T) {
+	var captured struct {
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
+		Input  []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"input"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, req *http.Request) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			return
+		}
+		if err := json.Unmarshal(body, &captured); err != nil {
+			t.Errorf("decode request: %v; body = %s", err, body)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello \"}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"from OpenAI\"}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{}}\n\n"))
+	}))
+	defer server.Close()
+
+	client, err := NewClient("test-key", "gpt-test", option.WithBaseURL(server.URL+"/"))
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	var deltas []string
+	got, err := client.GenerateStream(context.Background(), []llm.Message{{Role: "user", Content: "hello"}}, func(delta string) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("GenerateStream() error = %v", err)
+	}
+	if got != "hello from OpenAI" {
+		t.Fatalf("GenerateStream() = %q, want %q", got, "hello from OpenAI")
+	}
+	if len(deltas) != 2 || deltas[0] != "hello " || deltas[1] != "from OpenAI" {
+		t.Fatalf("deltas = %#v", deltas)
+	}
+	if captured.Model != "gpt-test" || !captured.Stream || len(captured.Input) != 1 || captured.Input[0].Role != "user" || captured.Input[0].Content != "hello" {
+		t.Fatalf("request = %#v", captured)
+	}
+}
+
+func TestClientGenerateStreamRejectsMissingCallback(t *testing.T) {
+	_, err := (&Client{}).GenerateStream(context.Background(), nil, nil)
+	if !errors.Is(err, llm.ErrOnDeltaMissed) {
+		t.Fatalf("GenerateStream() error = %v, want %v", err, llm.ErrOnDeltaMissed)
+	}
+}
+
+func TestClientGenerateStreamReturnsFailedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, req *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"provider failed\",\"code\":\"server_error\"}}}\n\n"))
+	}))
+	defer server.Close()
+
+	client, err := NewClient("test-key", "gpt-test", option.WithBaseURL(server.URL+"/"))
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.GenerateStream(context.Background(), []llm.Message{{Role: "user", Content: "hello"}}, func(string) error { return nil })
+	if !errors.Is(err, llm.ErrResponseFailed) || !strings.Contains(err.Error(), "provider failed") {
+		t.Fatalf("GenerateStream() error = %v, want wrapped provider failure", err)
+	}
+}

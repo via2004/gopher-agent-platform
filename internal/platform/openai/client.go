@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
-
 	openaisdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/responses"
+	"strings"
 
 	"gopherai/internal/llm"
 )
@@ -117,4 +116,69 @@ func (c *Client) Generate(ctx context.Context, messages []llm.Message) (string, 
 	}
 
 	return response.OutputText(), nil
+}
+
+func (c *Client) GenerateStream(ctx context.Context, messages []llm.Message, onDelta func(string) error) (responseMessage string, err error) {
+	if onDelta == nil {
+		return "", llm.ErrOnDeltaMissed
+	}
+	result := make([]rune, 0)
+	input := make([]responses.ResponseInputItemUnionParam, 0, len(messages))
+	for _, item := range messages {
+		input = append(input, responses.ResponseInputItemUnionParam{
+			OfMessage: &responses.EasyInputMessageParam{
+				Type: responses.EasyInputMessageTypeMessage,
+				Role: responses.EasyInputMessageRole(item.Role),
+				Content: responses.EasyInputMessageContentUnionParam{
+					OfString: openaisdk.String(item.Content),
+				},
+			},
+		})
+	}
+
+	stream := c.client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
+		Model: c.model,
+		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: input},
+		Store: openaisdk.Bool(!c.disableResponseStorage),
+		Reasoning: responses.ReasoningParam{
+			Effort: responses.ReasoningEffort(c.reasoningEffort),
+		},
+	})
+
+	defer func() {
+		if errs := stream.Close(); errs != nil {
+			err = errors.Join(err, fmt.Errorf("close stream error: %w", errs))
+		}
+	}()
+
+	completed := false
+	for stream.Next() {
+		data := stream.Current()
+		switch data.Type {
+		case "response.output_text.delta":
+			// 输出文本片段
+			if err := onDelta(data.Delta); err != nil {
+				return "", err
+			}
+			result = append(result, []rune(data.Delta)...)
+		case "response.completed":
+			// 完成
+			completed = true
+		case "response.failed":
+			return "", fmt.Errorf("%w: msg: %s; code: %s", llm.ErrResponseFailed,
+				data.Response.Error.Message, data.Response.Error.Code)
+		}
+		if completed {
+			break
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		return "", err
+	}
+	if !completed {
+		return "", llm.ErrResponseNotCompleted
+	}
+
+	return string(result), nil
 }
