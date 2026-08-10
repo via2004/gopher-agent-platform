@@ -4,6 +4,7 @@ import (
 	"context"
 	"gopherai/internal/llm"
 	"gopherai/internal/message"
+	"time"
 )
 
 const (
@@ -16,6 +17,17 @@ type Service struct {
 	streaming llm.StreamingClient
 }
 
+type Result struct {
+	ID           uint64
+	Role         message.Role
+	Content      string
+	CreatedAt    time.Time
+	Model        string
+	InputTokens  int64
+	OutputTokens int64
+	TotalTokens  int64
+}
+
 func NewService(messages MessageService, model llm.Client, streaming llm.StreamingClient) *Service {
 	return &Service{
 		messages:  messages,
@@ -25,7 +37,7 @@ func NewService(messages MessageService, model llm.Client, streaming llm.Streami
 }
 
 func (s *Service) ReceiveAndResponse(ctx context.Context, userID uint64,
-	conversationID uint64, content string) (*message.Message, error) {
+	conversationID uint64, content string) (*Result, error) {
 	_, err := s.messages.CreateUserMessage(ctx, userID, conversationID, content)
 	if err != nil {
 		return nil, err
@@ -36,21 +48,30 @@ func (s *Service) ReceiveAndResponse(ctx context.Context, userID uint64,
 		return nil, err
 	}
 
-	responseContent, err := s.model.Generate(ctx, toLLMMessages(messages))
+	modelResult, err := s.model.Generate(ctx, toLLMMessages(messages))
 	if err != nil {
 		return nil, err
 	}
 
-	responseMessage, err := s.messages.CreateAssistantMessage(ctx, userID, conversationID, responseContent)
+	assistant, err := s.messages.CreateAssistantMessage(ctx, userID, conversationID, modelResult.Content)
 	if err != nil {
 		return nil, err
 	}
 
-	return responseMessage, nil
+	return &Result{
+		ID:           assistant.ID,
+		Role:         assistant.Role,
+		Content:      assistant.Content,
+		CreatedAt:    assistant.CreatedAt,
+		Model:        modelResult.Model,
+		InputTokens:  modelResult.InputTokens,
+		OutputTokens: modelResult.OutputTokens,
+		TotalTokens:  modelResult.TotalTokens,
+	}, nil
 }
 
 func (s *Service) ChatStreaming(ctx context.Context, userID uint64,
-	conversationID uint64, content string, onDelta func(string) error) (*message.Message, error) {
+	conversationID uint64, content string, onDelta func(string) error) (*Result, error) {
 	_, err := s.messages.CreateUserMessage(ctx, userID, conversationID, content)
 	if err != nil {
 		return nil, err
@@ -60,17 +81,26 @@ func (s *Service) ChatStreaming(ctx context.Context, userID uint64,
 	if err != nil {
 		return nil, err
 	}
-	responseContent, err := s.streaming.GenerateStream(ctx, toLLMMessages(messages), onDelta)
+	modelResult, err := s.streaming.GenerateStream(ctx, toLLMMessages(messages), onDelta)
 	if err != nil {
 		return nil, err
 	}
 
-	responseMessage, err := s.messages.CreateAssistantMessage(ctx, userID, conversationID, responseContent)
+	assistant, err := s.messages.CreateAssistantMessage(ctx, userID, conversationID, modelResult.Content)
 	if err != nil {
 		return nil, err
 	}
 
-	return responseMessage, nil
+	return &Result{
+		ID:           assistant.ID,
+		Role:         assistant.Role,
+		Content:      assistant.Content,
+		CreatedAt:    assistant.CreatedAt,
+		Model:        modelResult.Model,
+		InputTokens:  modelResult.InputTokens,
+		OutputTokens: modelResult.OutputTokens,
+		TotalTokens:  modelResult.TotalTokens,
+	}, nil
 }
 
 func toLLMMessages(messages []*message.Message) []llm.Message {

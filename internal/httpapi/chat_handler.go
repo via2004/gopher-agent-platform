@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/gin-gonic/gin"
+	"gopherai/internal/chat"
 	"gopherai/internal/conversation"
 	"gopherai/internal/llm"
 	"gopherai/internal/message"
@@ -16,10 +17,10 @@ const streamMaxDuration = 2 * time.Minute
 
 type ChatService interface {
 	ReceiveAndResponse(ctx context.Context, userID uint64,
-		conversationID uint64, content string) (*message.Message, error)
+		conversationID uint64, content string) (*chat.Result, error)
 	ChatStreaming(ctx context.Context, userID uint64,
 		conversationID uint64, content string,
-		onDelta func(string) error) (*message.Message, error)
+		onDelta func(string) error) (*chat.Result, error)
 }
 
 type ChatHandler struct {
@@ -114,13 +115,16 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		})
 		return
 	default:
-		response := &messageResponse{
-			ID:        receiveMessage.ID,
-			Role:      receiveMessage.Role,
-			Content:   receiveMessage.Content,
-			CreatedAt: receiveMessage.CreatedAt,
-		}
-		c.JSON(http.StatusOK, response)
+		c.JSON(http.StatusOK, gin.H{
+			"id":            receiveMessage.ID,
+			"role":          receiveMessage.Role,
+			"content":       receiveMessage.Content,
+			"created_at":    receiveMessage.CreatedAt,
+			"model":         receiveMessage.Model,
+			"input_tokens":  receiveMessage.InputTokens,
+			"output_tokens": receiveMessage.OutputTokens,
+			"total_tokens":  receiveMessage.TotalTokens,
+		})
 	}
 }
 
@@ -232,9 +236,13 @@ func (h *ChatHandler) ChatStreaming(c *gin.Context) {
 		})
 	default:
 		c.SSEvent("done", gin.H{
-			"id":         receiveMessage.ID,
-			"role":       receiveMessage.Role,
-			"created_at": receiveMessage.CreatedAt,
+			"id":            receiveMessage.ID,
+			"role":          receiveMessage.Role,
+			"created_at":    receiveMessage.CreatedAt,
+			"model":         receiveMessage.Model,
+			"input_tokens":  receiveMessage.InputTokens,
+			"output_tokens": receiveMessage.OutputTokens,
+			"total_tokens":  receiveMessage.TotalTokens,
 		})
 	}
 	c.Writer.Flush()

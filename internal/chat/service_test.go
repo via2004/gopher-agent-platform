@@ -71,15 +71,15 @@ type fakeLLMClient struct {
 	calls    *[]string
 	ctx      context.Context
 	messages []llm.Message
-	response string
+	result   *llm.Result
 	err      error
 }
 
-func (f *fakeLLMClient) Generate(ctx context.Context, messages []llm.Message) (string, error) {
+func (f *fakeLLMClient) Generate(ctx context.Context, messages []llm.Message) (*llm.Result, error) {
 	*f.calls = append(*f.calls, "llm")
 	f.ctx = ctx
 	f.messages = messages
-	return f.response, f.err
+	return f.result, f.err
 }
 
 type fakeStreamingLLMClient struct {
@@ -87,7 +87,7 @@ type fakeStreamingLLMClient struct {
 	ctx      context.Context
 	messages []llm.Message
 	deltas   []string
-	response string
+	result   *llm.Result
 	err      error
 }
 
@@ -95,16 +95,16 @@ func (f *fakeStreamingLLMClient) GenerateStream(
 	ctx context.Context,
 	messages []llm.Message,
 	onDelta func(string) error,
-) (string, error) {
+) (*llm.Result, error) {
 	*f.calls = append(*f.calls, "llm-stream")
 	f.ctx = ctx
 	f.messages = messages
 	for _, delta := range f.deltas {
 		if err := onDelta(delta); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
-	return f.response, f.err
+	return f.result, f.err
 }
 
 func TestServiceReceiveAndResponse(t *testing.T) {
@@ -126,7 +126,14 @@ func TestServiceReceiveAndResponse(t *testing.T) {
 		},
 		assistant: assistant,
 	}
-	model := &fakeLLMClient{calls: &calls, response: assistant.Content}
+	modelResult := &llm.Result{
+		Content:      assistant.Content,
+		Model:        "gpt-test-actual",
+		InputTokens:  20,
+		OutputTokens: 10,
+		TotalTokens:  30,
+	}
+	model := &fakeLLMClient{calls: &calls, result: modelResult}
 	service := NewService(messages, model, nil)
 	type contextKey string
 	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
@@ -135,8 +142,11 @@ func TestServiceReceiveAndResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReceiveAndResponse() error = %v", err)
 	}
-	if got != assistant {
-		t.Fatalf("ReceiveAndResponse() message = %#v, want %#v", got, assistant)
+	if got.ID != assistant.ID || got.Role != assistant.Role || got.Content != assistant.Content ||
+		!got.CreatedAt.Equal(assistant.CreatedAt) || got.Model != modelResult.Model ||
+		got.InputTokens != modelResult.InputTokens || got.OutputTokens != modelResult.OutputTokens ||
+		got.TotalTokens != modelResult.TotalTokens {
+		t.Fatalf("ReceiveAndResponse() result = %#v", got)
 	}
 	if want := []string{"user", "recent", "llm", "assistant"}; !equalStrings(calls, want) {
 		t.Fatalf("call order = %v, want %v", calls, want)
@@ -147,8 +157,8 @@ func TestServiceReceiveAndResponse(t *testing.T) {
 	if messages.createUserCtx != ctx || messages.assistantCtx != ctx || model.ctx != ctx {
 		t.Fatal("ReceiveAndResponse() did not pass its context through the workflow")
 	}
-	if messages.assistantText != model.response {
-		t.Fatalf("assistant content = %q, want %q", messages.assistantText, model.response)
+	if messages.assistantText != model.result.Content {
+		t.Fatalf("assistant content = %q, want %q", messages.assistantText, model.result.Content)
 	}
 	if len(model.messages) != 2 {
 		t.Fatalf("LLM messages = %#v, want 2 non-nil messages", model.messages)
@@ -189,7 +199,7 @@ func TestServiceReceiveAndResponseStopsAfterFailure(t *testing.T) {
 				assistantErr: tt.assistantErr,
 				assistant:    &message.Message{ID: 3},
 			}
-			model := &fakeLLMClient{calls: &calls, response: "answer", err: tt.modelErr}
+			model := &fakeLLMClient{calls: &calls, result: &llm.Result{Content: "answer"}, err: tt.modelErr}
 			service := NewService(messages, model, nil)
 
 			got, err := service.ReceiveAndResponse(context.Background(), 7, 9, "question")
@@ -222,9 +232,15 @@ func TestServiceChatStreaming(t *testing.T) {
 		assistant: assistant,
 	}
 	streaming := &fakeStreamingLLMClient{
-		calls:    &calls,
-		deltas:   []string{"An interface", " describes behavior."},
-		response: assistant.Content,
+		calls:  &calls,
+		deltas: []string{"An interface", " describes behavior."},
+		result: &llm.Result{
+			Content:      assistant.Content,
+			Model:        "gpt-test-actual",
+			InputTokens:  20,
+			OutputTokens: 10,
+			TotalTokens:  30,
+		},
 	}
 	service := NewService(messages, nil, streaming)
 	type contextKey string
@@ -238,8 +254,11 @@ func TestServiceChatStreaming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ChatStreaming() error = %v", err)
 	}
-	if got != assistant {
-		t.Fatalf("ChatStreaming() message = %#v, want %#v", got, assistant)
+	if got.ID != assistant.ID || got.Role != assistant.Role || got.Content != assistant.Content ||
+		!got.CreatedAt.Equal(assistant.CreatedAt) || got.Model != streaming.result.Model ||
+		got.InputTokens != streaming.result.InputTokens || got.OutputTokens != streaming.result.OutputTokens ||
+		got.TotalTokens != streaming.result.TotalTokens {
+		t.Fatalf("ChatStreaming() result = %#v", got)
 	}
 	if want := []string{"user", "recent", "llm-stream", "assistant"}; !equalStrings(calls, want) {
 		t.Fatalf("call order = %v, want %v", calls, want)
@@ -253,8 +272,8 @@ func TestServiceChatStreaming(t *testing.T) {
 	if messages.createUserCtx != ctx || messages.recentCtx != ctx || streaming.ctx != ctx || messages.assistantCtx != ctx {
 		t.Fatal("ChatStreaming() did not pass its context through the workflow")
 	}
-	if messages.assistantText != streaming.response {
-		t.Fatalf("assistant content = %q, want %q", messages.assistantText, streaming.response)
+	if messages.assistantText != streaming.result.Content {
+		t.Fatalf("assistant content = %q, want %q", messages.assistantText, streaming.result.Content)
 	}
 	if len(streaming.messages) != 1 || streaming.messages[0].Role != string(message.RoleUser) || streaming.messages[0].Content != "What is an interface?" {
 		t.Fatalf("LLM messages = %#v", streaming.messages)
@@ -295,10 +314,10 @@ func TestServiceChatStreamingStopsAfterFailure(t *testing.T) {
 				assistant:    &message.Message{ID: 3},
 			}
 			streaming := &fakeStreamingLLMClient{
-				calls:    &calls,
-				deltas:   []string{"answer"},
-				response: "answer",
-				err:      tt.streamErr,
+				calls:  &calls,
+				deltas: []string{"answer"},
+				result: &llm.Result{Content: "answer"},
+				err:    tt.streamErr,
 			}
 			service := NewService(messages, nil, streaming)
 			onDelta := tt.onDelta

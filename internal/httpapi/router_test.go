@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"gopherai/internal/chat"
 	"gopherai/internal/conversation"
 	"gopherai/internal/message"
 	"gopherai/internal/user"
@@ -407,11 +408,10 @@ func TestNewRouterProtectsChatRoute(t *testing.T) {
 }
 
 func TestNewRouterServesChatForAuthenticatedUser(t *testing.T) {
-	service := &fakeChatService{response: &message.Message{
-		ID:             42,
-		ConversationID: 9,
-		Role:           message.RoleAssistant,
-		Content:        "answer",
+	service := &fakeChatService{response: &chat.Result{
+		ID:      42,
+		Role:    message.RoleAssistant,
+		Content: "answer",
 	}}
 	verifier := &fakeTokenVerifier{userID: 7}
 	router := NewRouter(
@@ -442,10 +442,9 @@ func TestNewRouterServesChatForAuthenticatedUser(t *testing.T) {
 func TestNewRouterServesStreamingChatForAuthenticatedUser(t *testing.T) {
 	service := &fakeChatService{
 		streamDeltas: []string{"answer"},
-		streamResponse: &message.Message{
-			ID:             42,
-			ConversationID: 9,
-			Role:           message.RoleAssistant,
+		streamResponse: &chat.Result{
+			ID:   42,
+			Role: message.RoleAssistant,
 		},
 	}
 	verifier := &fakeTokenVerifier{userID: 7}

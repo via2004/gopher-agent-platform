@@ -57,7 +57,7 @@ func TestClientGenerateUsesResponsesAPI(t *testing.T) {
 			return
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"hello from OpenAI"}]}]}`))
+		_, _ = writer.Write([]byte(`{"model":"gpt-test-actual","usage":{"input_tokens":20,"output_tokens":10,"total_tokens":30},"output":[{"type":"message","content":[{"type":"output_text","text":"hello from OpenAI"}]}]}`))
 	}))
 	defer server.Close()
 
@@ -81,8 +81,9 @@ func TestClientGenerateUsesResponsesAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	if got != "hello from OpenAI" {
-		t.Fatalf("Generate() = %q, want %q", got, "hello from OpenAI")
+	if got.Content != "hello from OpenAI" || got.Model != "gpt-test-actual" ||
+		got.InputTokens != 20 || got.OutputTokens != 10 || got.TotalTokens != 30 {
+		t.Fatalf("Generate() = %#v", got)
 	}
 	if captured.Model != "gpt-test" || !captured.Store || captured.Reasoning.Effort != "medium" || len(captured.Input) != 2 {
 		t.Fatalf("request = %#v, want model and 2 input messages", captured)
@@ -133,7 +134,7 @@ func TestClientGenerateStreamUsesResponsesAPI(t *testing.T) {
 		writer.Header().Set("Content-Type", "text/event-stream")
 		_, _ = writer.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello \"}\n\n"))
 		_, _ = writer.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"from OpenAI\"}\n\n"))
-		_, _ = writer.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{}}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-test-actual\",\"usage\":{\"input_tokens\":20,\"output_tokens\":10,\"total_tokens\":30}}}\n\n"))
 	}))
 	defer server.Close()
 
@@ -149,8 +150,9 @@ func TestClientGenerateStreamUsesResponsesAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateStream() error = %v", err)
 	}
-	if got != "hello from OpenAI" {
-		t.Fatalf("GenerateStream() = %q, want %q", got, "hello from OpenAI")
+	if got.Content != "hello from OpenAI" || got.Model != "gpt-test-actual" ||
+		got.InputTokens != 20 || got.OutputTokens != 10 || got.TotalTokens != 30 {
+		t.Fatalf("GenerateStream() = %#v", got)
 	}
 	if len(deltas) != 2 || deltas[0] != "hello " || deltas[1] != "from OpenAI" {
 		t.Fatalf("deltas = %#v", deltas)

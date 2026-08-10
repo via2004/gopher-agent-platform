@@ -89,7 +89,7 @@ OfMessage
 EasyInputMessageParam
 */
 
-func (c *Client) Generate(ctx context.Context, messages []llm.Message) (string, error) {
+func (c *Client) Generate(ctx context.Context, messages []llm.Message) (*llm.Result, error) {
 	input := make(responses.ResponseInputParam, 0, len(messages))
 	for _, item := range messages {
 		input = append(input, responses.ResponseInputItemUnionParam{
@@ -103,6 +103,8 @@ func (c *Client) Generate(ctx context.Context, messages []llm.Message) (string, 
 		})
 	}
 
+	result := &llm.Result{}
+
 	response, err := c.client.Responses.New(ctx, responses.ResponseNewParams{
 		Model: c.model,
 		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: input},
@@ -112,17 +114,23 @@ func (c *Client) Generate(ctx context.Context, messages []llm.Message) (string, 
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("generate OpenAI response: %w", err)
+		return nil, fmt.Errorf("generate OpenAI response: %w", err)
 	}
 
-	return response.OutputText(), nil
+	result.Content = response.OutputText()
+	result.Model = response.Model
+	result.InputTokens = response.Usage.InputTokens
+	result.OutputTokens = response.Usage.OutputTokens
+	result.TotalTokens = response.Usage.TotalTokens
+
+	return result, nil
 }
 
-func (c *Client) GenerateStream(ctx context.Context, messages []llm.Message, onDelta func(string) error) (responseMessage string, err error) {
+func (c *Client) GenerateStream(ctx context.Context, messages []llm.Message, onDelta func(string) error) (result *llm.Result, err error) {
 	if onDelta == nil {
-		return "", llm.ErrOnDeltaMissed
+		return nil, llm.ErrOnDeltaMissed
 	}
-	result := make([]rune, 0)
+	resultMessage := make([]rune, 0)
 	input := make([]responses.ResponseInputItemUnionParam, 0, len(messages))
 	for _, item := range messages {
 		input = append(input, responses.ResponseInputItemUnionParam{
@@ -158,14 +166,21 @@ func (c *Client) GenerateStream(ctx context.Context, messages []llm.Message, onD
 		case "response.output_text.delta":
 			// 输出文本片段
 			if err := onDelta(data.Delta); err != nil {
-				return "", err
+				return nil, err
 			}
-			result = append(result, []rune(data.Delta)...)
+			resultMessage = append(resultMessage, []rune(data.Delta)...)
 		case "response.completed":
 			// 完成
 			completed = true
+			result = &llm.Result{
+				Content:      string(resultMessage),
+				Model:        data.Response.Model,
+				InputTokens:  data.Response.Usage.InputTokens,
+				OutputTokens: data.Response.Usage.OutputTokens,
+				TotalTokens:  data.Response.Usage.TotalTokens,
+			}
 		case "response.failed":
-			return "", fmt.Errorf("%w: msg: %s; code: %s", llm.ErrResponseFailed,
+			return nil, fmt.Errorf("%w: msg: %s; code: %s", llm.ErrResponseFailed,
 				data.Response.Error.Message, data.Response.Error.Code)
 		}
 		if completed {
@@ -174,11 +189,11 @@ func (c *Client) GenerateStream(ctx context.Context, messages []llm.Message, onD
 	}
 
 	if err := stream.Err(); err != nil {
-		return "", err
+		return nil, err
 	}
 	if !completed {
-		return "", llm.ErrResponseNotCompleted
+		return nil, llm.ErrResponseNotCompleted
 	}
 
-	return string(result), nil
+	return result, nil
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"gopherai/internal/chat"
 	"gopherai/internal/conversation"
 	"gopherai/internal/llm"
 	"gopherai/internal/message"
@@ -24,11 +25,11 @@ type fakeChatService struct {
 	userID         uint64
 	conversationID uint64
 	content        string
-	response       *message.Message
+	response       *chat.Result
 	err            error
 	streamCalls    int
 	streamDeltas   []string
-	streamResponse *message.Message
+	streamResponse *chat.Result
 	streamErr      error
 }
 
@@ -37,18 +38,23 @@ func (f *fakeChatService) ReceiveAndResponse(
 	userID uint64,
 	conversationID uint64,
 	content string,
-) (*message.Message, error) {
+) (*chat.Result, error) {
 	f.calls++
 	f.ctx = ctx
 	f.userID = userID
 	f.conversationID = conversationID
 	f.content = content
-	return f.response, f.err
+
+	if f.err != nil {
+		return nil, f.err
+	}
+
+	return f.response, nil
 }
 
 func (f *fakeChatService) ChatStreaming(ctx context.Context, userID uint64,
 	conversationID uint64, content string,
-	onDelta func(string) error) (*message.Message, error) {
+	onDelta func(string) error) (*chat.Result, error) {
 	f.streamCalls++
 	f.ctx = ctx
 	f.userID = userID
@@ -59,7 +65,23 @@ func (f *fakeChatService) ChatStreaming(ctx context.Context, userID uint64,
 			return nil, err
 		}
 	}
-	return f.streamResponse, f.streamErr
+
+	if f.streamErr != nil {
+		return nil, f.streamErr
+	}
+
+	return f.streamResponse, nil
+}
+
+type chatResponseBody struct {
+	ID           uint64       `json:"id"`
+	Role         message.Role `json:"role"`
+	Content      string       `json:"content"`
+	CreatedAt    time.Time    `json:"created_at"`
+	Model        string       `json:"model"`
+	InputTokens  int64        `json:"input_tokens"`
+	OutputTokens int64        `json:"output_tokens"`
+	TotalTokens  int64        `json:"total_tokens"`
 }
 
 func newChatHandlerTestRouter(service ChatService, userID any, setUserID bool) *gin.Engine {
@@ -102,12 +124,15 @@ func assertChatContext(t *testing.T, ctx context.Context, key chatContextKey, wa
 
 func TestChatHandlerChat(t *testing.T) {
 	createdAt := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
-	service := &fakeChatService{response: &message.Message{
-		ID:             42,
-		ConversationID: 9,
-		Role:           message.RoleAssistant,
-		Content:        "An interface describes behavior.",
-		CreatedAt:      createdAt,
+	service := &fakeChatService{response: &chat.Result{
+		ID:           42,
+		Role:         message.RoleAssistant,
+		Content:      "An interface describes behavior.",
+		CreatedAt:    createdAt,
+		Model:        "gpt-test-actual",
+		InputTokens:  20,
+		OutputTokens: 10,
+		TotalTokens:  30,
 	}}
 	router := newChatHandlerTestRouter(service, uint64(7), true)
 	key := chatContextKey("request-id")
@@ -125,11 +150,14 @@ func TestChatHandlerChat(t *testing.T) {
 		t.Fatalf("ReceiveAndResponse() = %d calls with user ID %d, conversation ID %d, content %q", service.calls, service.userID, service.conversationID, service.content)
 	}
 	assertChatContext(t, service.ctx, key, "request-1")
-	var response messageResponse
+	var response chatResponseBody
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.ID != 42 || response.Role != message.RoleAssistant || response.Content != service.response.Content || !response.CreatedAt.Equal(createdAt) {
+	if response.ID != service.response.ID || response.Role != service.response.Role ||
+		response.Content != service.response.Content || !response.CreatedAt.Equal(service.response.CreatedAt) ||
+		response.Model != service.response.Model || response.InputTokens != service.response.InputTokens ||
+		response.OutputTokens != service.response.OutputTokens || response.TotalTokens != service.response.TotalTokens {
 		t.Errorf("response = %#v", response)
 	}
 }
@@ -228,10 +256,15 @@ func TestChatHandlerChatStreaming(t *testing.T) {
 	createdAt := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
 	service := &fakeChatService{
 		streamDeltas: []string{"An interface", " describes behavior."},
-		streamResponse: &message.Message{
-			ID:        42,
-			Role:      message.RoleAssistant,
-			CreatedAt: createdAt,
+		streamResponse: &chat.Result{
+			ID:           42,
+			Role:         message.RoleAssistant,
+			Content:      "An interface describes behavior.",
+			CreatedAt:    createdAt,
+			Model:        "gpt-test-actual",
+			InputTokens:  20,
+			OutputTokens: 10,
+			TotalTokens:  30,
 		},
 	}
 	router := newChatHandlerTestRouter(service, uint64(7), true)
@@ -261,6 +294,10 @@ func TestChatHandlerChatStreaming(t *testing.T) {
 		"event:done\n",
 		`"id":42`,
 		`"role":"assistant"`,
+		`"model":"gpt-test-actual"`,
+		`"input_tokens":20`,
+		`"output_tokens":10`,
+		`"total_tokens":30`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("SSE response does not contain %q; body = %q", want, body)
