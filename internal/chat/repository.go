@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"gopherai/internal/message"
+	"gopherai/internal/modelcall"
 )
 
 type MessageService interface {
@@ -23,4 +24,34 @@ type MessageService interface {
 		userID, conversationID uint64,
 		limit int,
 	) ([]*message.Message, error)
+}
+
+type ModelCallService interface {
+	Start(
+		ctx context.Context,
+		userID uint64,
+		modelCall *modelcall.Model,
+	) error
+
+	Complete(
+		ctx context.Context,
+		userID uint64,
+		modelCall *modelcall.Model,
+	) error
+
+	Finish(
+		ctx context.Context,
+		userID uint64,
+		modelCall *modelcall.Model,
+	) error
+}
+
+type UnitOfWork interface {
+	WithinTx(
+		ctx context.Context,
+		fn func(
+			messages MessageService,
+			modelCalls ModelCallService,
+		) error,
+	) error
 }

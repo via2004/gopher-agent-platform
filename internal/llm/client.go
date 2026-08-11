@@ -10,6 +10,15 @@ type Message struct {
 	Content string
 }
 
+type ModelDescriptor interface {
+	Info() ModelInfo
+}
+
+type ModelInfo struct {
+	Provider string
+	Model    string
+}
+
 // final result
 type Result struct {
 	Content      string
@@ -26,6 +35,7 @@ var (
 type ModelClient interface {
 	Client
 	StreamingClient
+	ModelDescriptor
 }
 
 type Client interface {
@@ -44,4 +54,8 @@ func (UnavailableClient) Generate(
 func (UnavailableClient) GenerateStream(ctx context.Context,
 	messages []Message, onDelta func(string) error) (responseContent *Result, err error) {
 	return nil, ErrNotConfigured
+}
+
+func (UnavailableClient) Info() ModelInfo {
+	return ModelInfo{}
 }

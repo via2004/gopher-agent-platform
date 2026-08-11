@@ -6,17 +6,16 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gopherai/internal/conversation"
 	"gopherai/internal/message"
 )
 
 type MessageRepository struct {
-	pool *pgxpool.Pool
+	pool DBTX
 }
 
-func NewMessageRepository(pool *pgxpool.Pool) *MessageRepository {
+func NewMessageRepository(pool DBTX) *MessageRepository {
 	return &MessageRepository{pool: pool}
 }
 

@@ -22,6 +22,7 @@ import (
 	"gopherai/internal/httpapi"
 	"gopherai/internal/llm"
 	"gopherai/internal/message"
+	"gopherai/internal/modelcall"
 	openaiplatform "gopherai/internal/platform/openai"
 	platform "gopherai/internal/platform/postgresql"
 	"gopherai/internal/user"
@@ -79,8 +80,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	txManager := platform.NewTxManager(pool)
+	unitOfWork := platform.NewChatUnitOfWork(txManager)
 
-	chatService := chat.NewService(messageService, modelClient, modelClient)
+	modelRepository := platform.NewModelRepository(pool)
+	modelCall := modelcall.NewService(modelRepository)
+
+	chatService := chat.NewService(messageService, modelClient, modelCall, unitOfWork)
 	chatHandler := httpapi.NewChatHandler(chatService)
 
 	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler, tokenManager)

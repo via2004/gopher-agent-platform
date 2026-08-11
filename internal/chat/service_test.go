@@ -8,6 +8,7 @@ import (
 
 	"gopherai/internal/llm"
 	"gopherai/internal/message"
+	"gopherai/internal/modelcall"
 )
 
 type fakeMessageService struct {
@@ -38,6 +39,14 @@ func (f *fakeMessageService) CreateUserMessage(
 	f.userID = userID
 	f.conversationID = conversationID
 	f.userContent = content
+	if f.userErr == nil && f.userMessage == nil {
+		f.userMessage = &message.Message{
+			ID:             2,
+			ConversationID: conversationID,
+			Role:           message.RoleUser,
+			Content:        content,
+		}
+	}
 	return f.userMessage, f.userErr
 }
 
@@ -82,6 +91,18 @@ func (f *fakeLLMClient) Generate(ctx context.Context, messages []llm.Message) (*
 	return f.result, f.err
 }
 
+func (f *fakeLLMClient) GenerateStream(
+	ctx context.Context,
+	messages []llm.Message,
+	onDelta func(string) error,
+) (*llm.Result, error) {
+	return nil, errors.New("unexpected streaming call")
+}
+
+func (f *fakeLLMClient) Info() llm.ModelInfo {
+	return llm.ModelInfo{Provider: "test", Model: "gpt-test-requested"}
+}
+
 type fakeStreamingLLMClient struct {
 	calls    *[]string
 	ctx      context.Context
@@ -105,6 +126,85 @@ func (f *fakeStreamingLLMClient) GenerateStream(
 		}
 	}
 	return f.result, f.err
+}
+
+func (f *fakeStreamingLLMClient) Generate(ctx context.Context, messages []llm.Message) (*llm.Result, error) {
+	return nil, errors.New("unexpected non-streaming call")
+}
+
+func (f *fakeStreamingLLMClient) Info() llm.ModelInfo {
+	return llm.ModelInfo{Provider: "test", Model: "gpt-test-requested"}
+}
+
+type fakeModelCallService struct {
+	calls        *[]string
+	startCtx     context.Context
+	startUserID  uint64
+	started      *modelcall.Model
+	startErr     error
+	completeCtx  context.Context
+	completeUser uint64
+	completed    *modelcall.Model
+	completeErr  error
+	finishCtx    context.Context
+	finishUser   uint64
+	finished     *modelcall.Model
+	finishErr    error
+}
+
+func (f *fakeModelCallService) Start(ctx context.Context, userID uint64, model *modelcall.Model) error {
+	*f.calls = append(*f.calls, "model-start")
+	f.startCtx = ctx
+	f.startUserID = userID
+	f.started = model
+	if f.startErr == nil {
+		model.ID = 101
+		model.StartedAt = time.Date(2026, time.August, 11, 10, 0, 0, 0, time.UTC)
+		model.Status = modelcall.StatusRunning
+	}
+	return f.startErr
+}
+
+func (f *fakeModelCallService) Complete(ctx context.Context, userID uint64, model *modelcall.Model) error {
+	*f.calls = append(*f.calls, "model-complete")
+	f.completeCtx = ctx
+	f.completeUser = userID
+	f.completed = model
+	if f.completeErr == nil {
+		model.Status = modelcall.StatusCompleted
+		finishedAt := time.Date(2026, time.August, 11, 10, 0, 1, 0, time.UTC)
+		model.FinishedAt = &finishedAt
+	}
+	return f.completeErr
+}
+
+func (f *fakeModelCallService) Finish(ctx context.Context, userID uint64, model *modelcall.Model) error {
+	*f.calls = append(*f.calls, "model-finish")
+	f.finishCtx = ctx
+	f.finishUser = userID
+	f.finished = model
+	if f.finishErr == nil {
+		finishedAt := time.Date(2026, time.August, 11, 10, 0, 1, 0, time.UTC)
+		model.FinishedAt = &finishedAt
+	}
+	return f.finishErr
+}
+
+type fakeUnitOfWork struct {
+	messages   MessageService
+	modelCalls ModelCallService
+	calls      int
+	contexts   []context.Context
+	err        error
+}
+
+func (f *fakeUnitOfWork) WithinTx(ctx context.Context, fn func(MessageService, ModelCallService) error) error {
+	f.calls++
+	f.contexts = append(f.contexts, ctx)
+	if f.err != nil {
+		return f.err
+	}
+	return fn(f.messages, f.modelCalls)
 }
 
 func TestServiceReceiveAndResponse(t *testing.T) {
@@ -134,7 +234,9 @@ func TestServiceReceiveAndResponse(t *testing.T) {
 		TotalTokens:  30,
 	}
 	model := &fakeLLMClient{calls: &calls, result: modelResult}
-	service := NewService(messages, model, nil)
+	modelCalls := &fakeModelCallService{calls: &calls}
+	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
+	service := NewService(messages, model, modelCalls, transactions)
 	type contextKey string
 	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
 
@@ -148,8 +250,11 @@ func TestServiceReceiveAndResponse(t *testing.T) {
 		got.TotalTokens != modelResult.TotalTokens {
 		t.Fatalf("ReceiveAndResponse() result = %#v", got)
 	}
-	if want := []string{"user", "recent", "llm", "assistant"}; !equalStrings(calls, want) {
+	if want := []string{"user", "model-start", "recent", "llm", "assistant", "model-complete"}; !equalStrings(calls, want) {
 		t.Fatalf("call order = %v, want %v", calls, want)
+	}
+	if transactions.calls != 2 || modelCalls.started == nil || modelCalls.completed == nil || modelCalls.finished != nil {
+		t.Fatalf("transactions/model calls = tx:%d start:%#v complete:%#v finish:%#v", transactions.calls, modelCalls.started, modelCalls.completed, modelCalls.finished)
 	}
 	if messages.userID != 7 || messages.conversationID != 9 || messages.userContent != "What is an interface?" || messages.recentLimit != defaultMessageLimit {
 		t.Fatalf("message service received user ID %d, conversation ID %d, content %q, limit %d", messages.userID, messages.conversationID, messages.userContent, messages.recentLimit)
@@ -184,9 +289,9 @@ func TestServiceReceiveAndResponseStopsAfterFailure(t *testing.T) {
 		wantCalls    []string
 	}{
 		{name: "user message", userErr: userErr, wantErr: userErr, wantCalls: []string{"user"}},
-		{name: "recent messages", recentErr: recentErr, wantErr: recentErr, wantCalls: []string{"user", "recent"}},
-		{name: "LLM", modelErr: modelErr, wantErr: modelErr, wantCalls: []string{"user", "recent", "llm"}},
-		{name: "assistant message", assistantErr: assistantErr, wantErr: assistantErr, wantCalls: []string{"user", "recent", "llm", "assistant"}},
+		{name: "recent messages", recentErr: recentErr, wantErr: recentErr, wantCalls: []string{"user", "model-start", "recent", "model-finish"}},
+		{name: "LLM", modelErr: modelErr, wantErr: modelErr, wantCalls: []string{"user", "model-start", "recent", "llm", "model-finish"}},
+		{name: "assistant message", assistantErr: assistantErr, wantErr: assistantErr, wantCalls: []string{"user", "model-start", "recent", "llm", "assistant", "model-finish"}},
 	}
 
 	for _, tt := range tests {
@@ -200,7 +305,9 @@ func TestServiceReceiveAndResponseStopsAfterFailure(t *testing.T) {
 				assistant:    &message.Message{ID: 3},
 			}
 			model := &fakeLLMClient{calls: &calls, result: &llm.Result{Content: "answer"}, err: tt.modelErr}
-			service := NewService(messages, model, nil)
+			modelCalls := &fakeModelCallService{calls: &calls}
+			transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
+			service := NewService(messages, model, modelCalls, transactions)
 
 			got, err := service.ReceiveAndResponse(context.Background(), 7, 9, "question")
 			if !errors.Is(err, tt.wantErr) {
@@ -213,6 +320,41 @@ func TestServiceReceiveAndResponseStopsAfterFailure(t *testing.T) {
 				t.Fatalf("call order = %v, want %v", calls, tt.wantCalls)
 			}
 		})
+	}
+}
+
+func TestServiceReceiveAndResponseFinishesWhenCompletionFails(t *testing.T) {
+	completeErr := errors.New("complete model call")
+	calls := make([]string, 0, 8)
+	assistant := &message.Message{ID: 3, Role: message.RoleAssistant, Content: "answer"}
+	messages := &fakeMessageService{
+		calls:     &calls,
+		recent:    []*message.Message{{ID: 1, Role: message.RoleUser, Content: "question"}},
+		assistant: assistant,
+	}
+	model := &fakeLLMClient{
+		calls:  &calls,
+		result: &llm.Result{Content: assistant.Content, Model: "gpt-test"},
+	}
+	modelCalls := &fakeModelCallService{calls: &calls, completeErr: completeErr}
+	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
+	service := NewService(messages, model, modelCalls, transactions)
+
+	got, err := service.ReceiveAndResponse(context.Background(), 7, 9, "question")
+	if !errors.Is(err, completeErr) {
+		t.Fatalf("ReceiveAndResponse() error = %v, want %v", err, completeErr)
+	}
+	if got != nil {
+		t.Fatalf("ReceiveAndResponse() result = %#v, want nil", got)
+	}
+	if want := []string{"user", "model-start", "recent", "llm", "assistant", "model-complete", "model-finish"}; !equalStrings(calls, want) {
+		t.Fatalf("call order = %v, want %v", calls, want)
+	}
+	if modelCalls.finished == nil || modelCalls.finished.Status != modelcall.StatusFailed {
+		t.Fatalf("finished model call = %#v, want failed status", modelCalls.finished)
+	}
+	if modelCalls.finished.ErrorCode == nil || *modelCalls.finished.ErrorCode != "model_call_complete_failed" {
+		t.Fatalf("finished error code = %v, want model_call_complete_failed", modelCalls.finished.ErrorCode)
 	}
 }
 
@@ -242,7 +384,9 @@ func TestServiceChatStreaming(t *testing.T) {
 			TotalTokens:  30,
 		},
 	}
-	service := NewService(messages, nil, streaming)
+	modelCalls := &fakeModelCallService{calls: &calls}
+	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
+	service := NewService(messages, streaming, modelCalls, transactions)
 	type contextKey string
 	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
 	var gotDeltas []string
@@ -260,8 +404,11 @@ func TestServiceChatStreaming(t *testing.T) {
 		got.TotalTokens != streaming.result.TotalTokens {
 		t.Fatalf("ChatStreaming() result = %#v", got)
 	}
-	if want := []string{"user", "recent", "llm-stream", "assistant"}; !equalStrings(calls, want) {
+	if want := []string{"user", "model-start", "recent", "llm-stream", "assistant", "model-complete"}; !equalStrings(calls, want) {
 		t.Fatalf("call order = %v, want %v", calls, want)
+	}
+	if transactions.calls != 2 || modelCalls.completed == nil || modelCalls.finished != nil {
+		t.Fatalf("transactions/model calls = tx:%d complete:%#v finish:%#v", transactions.calls, modelCalls.completed, modelCalls.finished)
 	}
 	if !equalStrings(gotDeltas, streaming.deltas) {
 		t.Fatalf("deltas = %v, want %v", gotDeltas, streaming.deltas)
@@ -297,10 +444,10 @@ func TestServiceChatStreamingStopsAfterFailure(t *testing.T) {
 		wantCalls    []string
 	}{
 		{name: "user message", userErr: userErr, wantErr: userErr, wantCalls: []string{"user"}},
-		{name: "recent messages", recentErr: recentErr, wantErr: recentErr, wantCalls: []string{"user", "recent"}},
-		{name: "LLM stream", streamErr: streamErr, wantErr: streamErr, wantCalls: []string{"user", "recent", "llm-stream"}},
-		{name: "delta callback", onDelta: func(string) error { return callbackErr }, wantErr: callbackErr, wantCalls: []string{"user", "recent", "llm-stream"}},
-		{name: "assistant message", assistantErr: assistantErr, wantErr: assistantErr, wantCalls: []string{"user", "recent", "llm-stream", "assistant"}},
+		{name: "recent messages", recentErr: recentErr, wantErr: recentErr, wantCalls: []string{"user", "model-start", "recent", "model-finish"}},
+		{name: "LLM stream", streamErr: streamErr, wantErr: streamErr, wantCalls: []string{"user", "model-start", "recent", "llm-stream", "model-finish"}},
+		{name: "delta callback", onDelta: func(string) error { return callbackErr }, wantErr: callbackErr, wantCalls: []string{"user", "model-start", "recent", "llm-stream", "model-finish"}},
+		{name: "assistant message", assistantErr: assistantErr, wantErr: assistantErr, wantCalls: []string{"user", "model-start", "recent", "llm-stream", "assistant", "model-finish"}},
 	}
 
 	for _, tt := range tests {
@@ -319,7 +466,9 @@ func TestServiceChatStreamingStopsAfterFailure(t *testing.T) {
 				result: &llm.Result{Content: "answer"},
 				err:    tt.streamErr,
 			}
-			service := NewService(messages, nil, streaming)
+			modelCalls := &fakeModelCallService{calls: &calls}
+			transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
+			service := NewService(messages, streaming, modelCalls, transactions)
 			onDelta := tt.onDelta
 			if onDelta == nil {
 				onDelta = func(string) error { return nil }
@@ -336,6 +485,40 @@ func TestServiceChatStreamingStopsAfterFailure(t *testing.T) {
 				t.Fatalf("call order = %v, want %v", calls, tt.wantCalls)
 			}
 		})
+	}
+}
+
+func TestServiceChatStreamingMarksIncompleteResponse(t *testing.T) {
+	calls := make([]string, 0, 8)
+	messages := &fakeMessageService{
+		calls:  &calls,
+		recent: []*message.Message{{ID: 1, Role: message.RoleUser, Content: "question"}},
+	}
+	streaming := &fakeStreamingLLMClient{
+		calls:  &calls,
+		deltas: []string{"partial"},
+		result: &llm.Result{Content: "partial"},
+		err:    llm.ErrResponseNotCompleted,
+	}
+	modelCalls := &fakeModelCallService{calls: &calls}
+	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
+	service := NewService(messages, streaming, modelCalls, transactions)
+
+	got, err := service.ChatStreaming(context.Background(), 7, 9, "question", func(string) error { return nil })
+	if !errors.Is(err, llm.ErrResponseNotCompleted) {
+		t.Fatalf("ChatStreaming() error = %v, want %v", err, llm.ErrResponseNotCompleted)
+	}
+	if got != nil {
+		t.Fatalf("ChatStreaming() result = %#v, want nil", got)
+	}
+	if want := []string{"user", "model-start", "recent", "llm-stream", "model-finish"}; !equalStrings(calls, want) {
+		t.Fatalf("call order = %v, want %v", calls, want)
+	}
+	if modelCalls.finished == nil || modelCalls.finished.Status != modelcall.StatusIncomplete {
+		t.Fatalf("finished model call = %#v, want incomplete status", modelCalls.finished)
+	}
+	if modelCalls.finished.ErrorCode == nil || *modelCalls.finished.ErrorCode != "llm_incomplete" {
+		t.Fatalf("finished error code = %v, want llm_incomplete", modelCalls.finished.ErrorCode)
 	}
 }
 

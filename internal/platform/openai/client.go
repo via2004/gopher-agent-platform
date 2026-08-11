@@ -197,3 +197,10 @@ func (c *Client) GenerateStream(ctx context.Context, messages []llm.Message, onD
 
 	return result, nil
 }
+
+func (c *Client) Info() llm.ModelInfo {
+	return llm.ModelInfo{
+		Provider: "openai",
+		Model:    c.model,
+	}
+}

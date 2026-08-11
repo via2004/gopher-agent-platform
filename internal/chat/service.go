@@ -2,8 +2,10 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"gopherai/internal/llm"
 	"gopherai/internal/message"
+	"gopherai/internal/modelcall"
 	"time"
 )
 
@@ -12,9 +14,20 @@ const (
 )
 
 type Service struct {
-	messages  MessageService
-	model     llm.Client
-	streaming llm.StreamingClient
+	messages     MessageService
+	model        llm.ModelClient
+	modelCall    ModelCallService
+	transactions UnitOfWork
+}
+
+func NewService(messages MessageService, model llm.ModelClient,
+	modelCall ModelCallService, transactions UnitOfWork) *Service {
+	return &Service{
+		messages:     messages,
+		model:        model,
+		transactions: transactions,
+		modelCall:    modelCall,
+	}
 }
 
 type Result struct {
@@ -28,33 +41,59 @@ type Result struct {
 	TotalTokens  int64
 }
 
-func NewService(messages MessageService, model llm.Client, streaming llm.StreamingClient) *Service {
-	return &Service{
-		messages:  messages,
-		model:     model,
-		streaming: streaming,
-	}
-}
-
 func (s *Service) ReceiveAndResponse(ctx context.Context, userID uint64,
 	conversationID uint64, content string) (*Result, error) {
-	_, err := s.messages.CreateUserMessage(ctx, userID, conversationID, content)
+
+	model := &modelcall.Model{
+		ConversationID: conversationID,
+	}
+	err := s.startModelCall(ctx, userID, conversationID, content, model)
 	if err != nil {
 		return nil, err
 	}
 
 	messages, err := s.messages.ListRecent(ctx, userID, conversationID, defaultMessageLimit)
 	if err != nil {
+		markModelCallFailure(model, err, "history_load")
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		err = errors.Join(err, s.finishModelCall(cleanupCtx, userID, model))
 		return nil, err
 	}
 
 	modelResult, err := s.model.Generate(ctx, toLLMMessages(messages))
 	if err != nil {
+		markModelCallFailure(model, err, "llm")
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		err = errors.Join(err, s.finishModelCall(cleanupCtx, userID, model))
 		return nil, err
 	}
 
-	assistant, err := s.messages.CreateAssistantMessage(ctx, userID, conversationID, modelResult.Content)
+	var assistant *message.Message
+
+	err = s.transactions.WithinTx(ctx, func(
+		messages MessageService,
+		modelCalls ModelCallService,
+	) error {
+		assistant, err = messages.CreateAssistantMessage(ctx, userID,
+			conversationID, modelResult.Content)
+		if err != nil {
+			markModelCallFailure(model, err, "assistant_message")
+			return err
+		}
+
+		return s.saveAssistantAndComplete(ctx, userID, modelCalls, assistant, modelResult, model)
+	})
+
 	if err != nil {
+		if !model.Status.IsFailureTerminal() {
+			markModelCallFailure(model, err, "model_call_complete")
+		}
+
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		err = errors.Join(err, s.finishModelCall(cleanupCtx, userID, model))
 		return nil, err
 	}
 
@@ -70,24 +109,78 @@ func (s *Service) ReceiveAndResponse(ctx context.Context, userID uint64,
 	}, nil
 }
 
+func markModelCallFailure(model *modelcall.Model, err error, operation string) {
+	statusSuffix := "failed"
+	model.Status = modelcall.StatusFailed
+
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		model.Status = modelcall.StatusTimedOut
+		statusSuffix = "timed_out"
+	case errors.Is(err, context.Canceled):
+		model.Status = modelcall.StatusCancelled
+		statusSuffix = "cancelled"
+	case errors.Is(err, llm.ErrResponseNotCompleted):
+		model.Status = modelcall.StatusIncomplete
+		statusSuffix = "incomplete"
+	}
+
+	errorCode := operation + "_" + statusSuffix
+	model.ErrorCode = &errorCode
+}
+
 func (s *Service) ChatStreaming(ctx context.Context, userID uint64,
 	conversationID uint64, content string, onDelta func(string) error) (*Result, error) {
-	_, err := s.messages.CreateUserMessage(ctx, userID, conversationID, content)
+	model := &modelcall.Model{
+		ConversationID: conversationID,
+	}
+	err := s.startModelCall(ctx, userID, conversationID, content, model)
 	if err != nil {
 		return nil, err
 	}
 
 	messages, err := s.messages.ListRecent(ctx, userID, conversationID, defaultMessageLimit)
 	if err != nil {
-		return nil, err
-	}
-	modelResult, err := s.streaming.GenerateStream(ctx, toLLMMessages(messages), onDelta)
-	if err != nil {
+		markModelCallFailure(model, err, "history_load")
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		err = errors.Join(err, s.finishModelCall(cleanupCtx, userID, model))
 		return nil, err
 	}
 
-	assistant, err := s.messages.CreateAssistantMessage(ctx, userID, conversationID, modelResult.Content)
+	modelResult, err := s.model.GenerateStream(ctx, toLLMMessages(messages), onDelta)
 	if err != nil {
+		markModelCallFailure(model, err, "llm")
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		err = errors.Join(err, s.finishModelCall(cleanupCtx, userID, model))
+		return nil, err
+	}
+
+	var assistant *message.Message
+
+	err = s.transactions.WithinTx(ctx, func(
+		messages MessageService,
+		modelCalls ModelCallService,
+	) error {
+		assistant, err = messages.CreateAssistantMessage(ctx, userID,
+			conversationID, modelResult.Content)
+		if err != nil {
+			markModelCallFailure(model, err, "assistant_message")
+			return err
+		}
+
+		return s.saveAssistantAndComplete(ctx, userID, modelCalls, assistant, modelResult, model)
+	})
+
+	if err != nil {
+		if !model.Status.IsFailureTerminal() {
+			markModelCallFailure(model, err, "model_call_complete")
+		}
+
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		err = errors.Join(err, s.finishModelCall(cleanupCtx, userID, model))
 		return nil, err
 	}
 
@@ -116,4 +209,46 @@ func toLLMMessages(messages []*message.Message) []llm.Message {
 		})
 	}
 	return result
+}
+
+func (s *Service) startModelCall(ctx context.Context, userID, conversationID uint64, content string, model *modelcall.Model) error {
+	return s.transactions.WithinTx(ctx, func(
+		messages MessageService,
+		modelCalls ModelCallService,
+	) error {
+		message, err := messages.CreateUserMessage(ctx, userID, conversationID, content)
+		if err != nil {
+			return err
+		}
+
+		info := s.model.Info()
+
+		model.RequestMessageID = message.ID
+		model.RequestedModel = &info.Model
+		model.Provider = info.Provider
+
+		return modelCalls.Start(ctx, userID, model)
+	})
+}
+
+func (s *Service) finishModelCall(ctx context.Context, userID uint64, model *modelcall.Model) error {
+	return s.modelCall.Finish(ctx, userID, model)
+}
+
+func (s *Service) saveAssistantAndComplete(ctx context.Context, userID uint64,
+	modelCalls ModelCallService, assistant *message.Message,
+	modelResult *llm.Result, model *modelcall.Model) error {
+
+	model.AssistantMessageID = &assistant.ID
+	model.ActualModel = &modelResult.Model
+	model.InputTokens = &modelResult.InputTokens
+	model.OutputTokens = &modelResult.OutputTokens
+	model.TotalTokens = &modelResult.TotalTokens
+
+	if err := modelCalls.Complete(ctx, userID, model); err != nil {
+		markModelCallFailure(model, err, "model_call_complete")
+		return err
+	}
+
+	return nil
 }
