@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"errors"
 )
 
 type Message struct {
@@ -27,10 +26,6 @@ type Result struct {
 	OutputTokens int64
 	TotalTokens  int64
 }
-
-var (
-	ErrNotConfigured = errors.New("llm is not configured")
-)
 
 type ModelClient interface {
 	Client

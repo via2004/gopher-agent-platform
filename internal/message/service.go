@@ -2,7 +2,6 @@ package message
 
 import (
 	"context"
-	"errors"
 	"strings"
 
 	"gopherai/internal/conversation"
@@ -12,12 +11,6 @@ const (
 	maxContentLength = 20_000
 	maxPage          = 10_000
 	maxPageSize      = 100
-)
-
-var (
-	ErrInvalidContent        = errors.New("content is invalid")
-	ErrInvalidConversationID = errors.New("conversation ID is invalid")
-	ErrInvalidLimit          = errors.New("limit must be positive")
 )
 
 type Service struct {
