@@ -12,6 +12,7 @@ func NewRouter(
 	messageHandler *MessageHandler,
 	chatHandler *ChatHandler,
 	tokens TokenVerifier,
+	limiter ChatRateLimiter,
 ) *gin.Engine {
 	router := gin.Default()
 
@@ -33,7 +34,10 @@ func NewRouter(
 
 	authenticated.GET("/conversations/:id/messages", messageHandler.List)
 	authenticated.POST("/conversations/:id/messages", messageHandler.CreateUserMessage)
-	authenticated.POST("/conversations/:id/chat", chatHandler.Chat)
-	authenticated.POST("/conversations/:id/chat/stream", chatHandler.ChatStreaming)
+
+	chatRateLimit := ChatRateLimitMiddleware(limiter)
+
+	authenticated.POST("/conversations/:id/chat", chatRateLimit, chatHandler.Chat)
+	authenticated.POST("/conversations/:id/chat/stream", chatRateLimit, chatHandler.ChatStreaming)
 	return router
 }

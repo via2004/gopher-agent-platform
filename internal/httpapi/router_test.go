@@ -16,7 +16,7 @@ import (
 )
 
 func TestNewRouterHealthz(t *testing.T) {
-	router := NewRouter(NewUserHandler(&fakeUserRegistrar{}, nil), nil, nil, nil, nil)
+	router := NewRouter(NewUserHandler(&fakeUserRegistrar{}, nil), nil, nil, nil, nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
@@ -41,7 +41,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 		Email:     "user@example.com",
 		CreatedAt: createdAt,
 	}}
-	router := NewRouter(NewUserHandler(registrar, nil), nil, nil, nil, nil)
+	router := NewRouter(NewUserHandler(registrar, nil), nil, nil, nil, nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),
@@ -61,7 +61,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 func TestNewRouterProtectsCurrentUserRoute(t *testing.T) {
 	users := &fakeUserRegistrar{}
 	verifier := &fakeTokenVerifier{}
-	router := NewRouter(NewUserHandler(users, nil), nil, nil, nil, verifier)
+	router := NewRouter(NewUserHandler(users, nil), nil, nil, nil, verifier, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
 
@@ -79,7 +79,7 @@ func TestNewRouterProtectsCurrentUserRoute(t *testing.T) {
 func TestNewRouterServesCurrentUserForValidToken(t *testing.T) {
 	users := &fakeUserRegistrar{queriedUser: &user.User{ID: 42, Email: "user@example.com"}}
 	verifier := &fakeTokenVerifier{userID: 42}
-	router := NewRouter(NewUserHandler(users, nil), nil, nil, nil, verifier)
+	router := NewRouter(NewUserHandler(users, nil), nil, nil, nil, verifier, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
 	req.Header.Set("Authorization", "Bearer access-token")
@@ -104,6 +104,7 @@ func TestNewRouterProtectsCreateConversationRoute(t *testing.T) {
 		NewUserHandler(&fakeUserRegistrar{}, nil),
 		NewConversationHandler(service), nil, nil,
 		verifier,
+		nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations",
@@ -134,6 +135,7 @@ func TestNewRouterCreatesConversationForAuthenticatedUser(t *testing.T) {
 		NewUserHandler(&fakeUserRegistrar{}, nil),
 		NewConversationHandler(service), nil, nil,
 		verifier,
+		nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations",
@@ -162,6 +164,7 @@ func TestNewRouterProtectsConversationListRoute(t *testing.T) {
 		NewUserHandler(&fakeUserRegistrar{}, nil),
 		NewConversationHandler(service), nil, nil,
 		verifier,
+		nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations", nil)
@@ -181,6 +184,7 @@ func TestNewRouterListsConversationsForAuthenticatedUser(t *testing.T) {
 		NewUserHandler(&fakeUserRegistrar{}, nil),
 		NewConversationHandler(service), nil, nil,
 		verifier,
+		nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations?page=2&page_size=10", nil)
@@ -206,6 +210,7 @@ func TestNewRouterProtectsConversationDetailRoute(t *testing.T) {
 		NewUserHandler(&fakeUserRegistrar{}, nil),
 		NewConversationHandler(service), nil, nil,
 		verifier,
+		nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations/42", nil)
@@ -229,6 +234,7 @@ func TestNewRouterGetsConversationForAuthenticatedUser(t *testing.T) {
 		NewUserHandler(&fakeUserRegistrar{}, nil),
 		NewConversationHandler(service), nil, nil,
 		verifier,
+		nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations/42", nil)
@@ -254,6 +260,7 @@ func TestNewRouterProtectsConversationDeleteRoute(t *testing.T) {
 		NewUserHandler(&fakeUserRegistrar{}, nil),
 		NewConversationHandler(service), nil, nil,
 		verifier,
+		nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/conversations/42", nil)
@@ -273,6 +280,7 @@ func TestNewRouterDeletesConversationForAuthenticatedUser(t *testing.T) {
 		NewUserHandler(&fakeUserRegistrar{}, nil),
 		NewConversationHandler(service), nil, nil,
 		verifier,
+		nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/conversations/42", nil)
@@ -310,6 +318,7 @@ func TestNewRouterProtectsMessageRoutes(t *testing.T) {
 				nil,
 				NewMessageHandler(service), nil,
 				verifier,
+				nil,
 			)
 			recorder := httptest.NewRecorder()
 			req := httptest.NewRequest(tt.method, "/api/v1/conversations/9/messages", strings.NewReader(tt.body))
@@ -340,6 +349,7 @@ func TestNewRouterCreatesMessageForAuthenticatedUser(t *testing.T) {
 		nil,
 		NewMessageHandler(service), nil,
 		verifier,
+		nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/messages", strings.NewReader(`{"content":"hello"}`))
@@ -367,6 +377,7 @@ func TestNewRouterListsMessagesForAuthenticatedUser(t *testing.T) {
 		nil,
 		NewMessageHandler(service), nil,
 		verifier,
+		nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations/9/messages?page=2&page_size=10", nil)
@@ -394,6 +405,7 @@ func TestNewRouterProtectsChatRoute(t *testing.T) {
 		nil,
 		NewChatHandler(service),
 		verifier,
+		&fakeChatRateLimiter{allowed: true},
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/chat", strings.NewReader(`{"content":"hello"}`))
@@ -420,6 +432,7 @@ func TestNewRouterServesChatForAuthenticatedUser(t *testing.T) {
 		nil,
 		NewChatHandler(service),
 		verifier,
+		&fakeChatRateLimiter{allowed: true},
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/chat", strings.NewReader(`{"content":"hello"}`))
@@ -454,6 +467,7 @@ func TestNewRouterServesStreamingChatForAuthenticatedUser(t *testing.T) {
 		nil,
 		NewChatHandler(service),
 		verifier,
+		&fakeChatRateLimiter{allowed: true},
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/chat/stream", strings.NewReader(`{"content":"hello"}`))
@@ -492,7 +506,7 @@ func (panicUserRegistrar) GetByID(ctx context.Context, userID uint64) (*user.Use
 }
 
 func TestNewRouterRecoversFromHandlerPanic(t *testing.T) {
-	router := NewRouter(NewUserHandler(panicUserRegistrar{}, nil), nil, nil, nil, nil)
+	router := NewRouter(NewUserHandler(panicUserRegistrar{}, nil), nil, nil, nil, nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),

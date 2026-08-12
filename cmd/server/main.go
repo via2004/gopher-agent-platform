@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 
 	"gopherai/internal/auth"
 	"gopherai/internal/chat"
@@ -25,6 +26,7 @@ import (
 	"gopherai/internal/modelcall"
 	openaiplatform "gopherai/internal/platform/openai"
 	platform "gopherai/internal/platform/postgresql"
+	redis_ "gopherai/internal/platform/redis"
 	"gopherai/internal/user"
 )
 
@@ -89,7 +91,45 @@ func run() error {
 	chatService := chat.NewService(messageService, modelClient, modelCall, unitOfWork)
 	chatHandler := httpapi.NewChatHandler(chatService)
 
-	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler, tokenManager)
+	limitString := os.Getenv("CHAT_RATE_LIMIT")
+	limit, err := strconv.ParseInt(limitString, 10, 64)
+	if err != nil {
+		return err
+	}
+	if limit <= 0 {
+		return errors.New("CHAT_RATE_LIMIT must be positive")
+	}
+
+	windowString := os.Getenv("CHAT_RATE_WINDOW_SECONDS")
+	window, err := strconv.ParseInt(windowString, 10, 64)
+	if err != nil {
+		return err
+	}
+	if window <= 0 {
+		return errors.New("CHAT_RATE_WINDOW_SECONDS must be positive")
+	}
+
+	redisURLString := os.Getenv("REDIS_URL")
+	options, err := redis.ParseURL(redisURLString)
+	if err != nil {
+		return fmt.Errorf("parse REDIS_URL: %w", err)
+	}
+	client := redis.NewClient(options)
+	defer client.Close()
+
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	if err := client.Ping(ctx).Err(); err != nil {
+		cancel()
+		return fmt.Errorf("ping redis error: %w", err)
+	}
+	cancel()
+
+	chatRateLimiter, err := redis_.NewRateLimiter(client, limit, time.Duration(window)*time.Second)
+	if err != nil {
+		return err
+	}
+
+	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler, tokenManager, chatRateLimiter)
 
 	server := &http.Server{
 		Addr:           IPAddr + Port,
