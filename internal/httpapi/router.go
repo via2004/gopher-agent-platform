@@ -11,6 +11,7 @@ func NewRouter(
 	conversationHandler *ConversationHandler,
 	messageHandler *MessageHandler,
 	chatHandler *ChatHandler,
+	checker *HealthHandler,
 	tokens TokenVerifier,
 	limiter ChatRateLimiter,
 ) *gin.Engine {
@@ -25,6 +26,7 @@ func NewRouter(
 			"message": "pong",
 		})
 	})
+	router.GET("/readyz", checker.Ready)
 	router.POST("/api/v1/auth/register", userHandler.Register)
 	router.POST("/api/v1/auth/login", userHandler.Login)
 

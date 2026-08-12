@@ -20,6 +20,7 @@ import (
 	"gopherai/internal/auth"
 	"gopherai/internal/chat"
 	"gopherai/internal/conversation"
+	"gopherai/internal/health"
 	"gopherai/internal/httpapi"
 	"gopherai/internal/llm"
 	"gopherai/internal/message"
@@ -129,7 +130,13 @@ func run() error {
 		return err
 	}
 
-	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler, tokenManager, chatRateLimiter)
+	readinessChecker := health.NewChecker(pool.Ping, func(ctx context.Context) error {
+		return client.Ping(ctx).Err()
+	})
+
+	checker := httpapi.NewHealthHandler(readinessChecker)
+
+	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler, checker, tokenManager, chatRateLimiter)
 
 	server := &http.Server{
 		Addr:           IPAddr + Port,
