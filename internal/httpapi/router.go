@@ -14,7 +14,11 @@ func NewRouter(
 	tokens TokenVerifier,
 	limiter ChatRateLimiter,
 ) *gin.Engine {
-	router := gin.Default()
+	router := gin.New()
+
+	router.Use(RequestIDMiddleware())
+	router.Use(LogMiddleware())
+	router.Use(gin.Recovery())
 
 	router.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
