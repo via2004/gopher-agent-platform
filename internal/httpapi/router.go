@@ -12,6 +12,7 @@ func NewRouter(
 	messageHandler *MessageHandler,
 	chatHandler *ChatHandler,
 	checker *HealthHandler,
+	chatjobHandler *ChatJobHandler,
 	tokens TokenVerifier,
 	limiter ChatRateLimiter,
 ) *gin.Engine {
@@ -45,5 +46,7 @@ func NewRouter(
 
 	authenticated.POST("/conversations/:id/chat", chatRateLimit, chatHandler.Chat)
 	authenticated.POST("/conversations/:id/chat/stream", chatRateLimit, chatHandler.ChatStreaming)
+	authenticated.POST("/conversations/:id/chat-jobs", chatRateLimit, chatjobHandler.Create)
+	authenticated.GET("/chat-jobs/:id", chatjobHandler.Get)
 	return router
 }

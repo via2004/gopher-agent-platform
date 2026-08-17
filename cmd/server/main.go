@@ -19,6 +19,7 @@ import (
 
 	"gopherai/internal/auth"
 	"gopherai/internal/chat"
+	"gopherai/internal/chatjob"
 	"gopherai/internal/conversation"
 	"gopherai/internal/health"
 	"gopherai/internal/httpapi"
@@ -27,6 +28,7 @@ import (
 	"gopherai/internal/modelcall"
 	openaiplatform "gopherai/internal/platform/openai"
 	platform "gopherai/internal/platform/postgresql"
+	rabbitmq "gopherai/internal/platform/rabbitmq"
 	redis_ "gopherai/internal/platform/redis"
 	"gopherai/internal/user"
 )
@@ -45,8 +47,14 @@ func run() error {
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
-		return errors.New("databaseURL is empty!")
+		return errors.New("DATABASE_URL is empty!")
 	}
+
+	rabbitmqURL := os.Getenv("RABBITMQ_URL")
+	if rabbitmqURL == "" {
+		return errors.New("RABBITMQ_URL is empty!")
+	}
+
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
 		return errors.New("JWT_SECRET is empty")
@@ -92,6 +100,32 @@ func run() error {
 	chatService := chat.NewService(messageService, modelClient, modelCall, unitOfWork)
 	chatHandler := httpapi.NewChatHandler(chatService)
 
+	chatJobRepository := platform.NewChatJobsRepository(pool)
+	rabbitMqClient, err := rabbitmq.NewRabbitMQClient(rabbitmqURL)
+	if err != nil {
+		return fmt.Errorf("new rabbitmq client: %w", err)
+	}
+	defer rabbitMqClient.Close()
+
+	chatJobService := chatjob.NewService(chatJobRepository, rabbitMqClient, chatService)
+	chatJobHandler := httpapi.NewChatJobHandler(chatJobService)
+
+	cancelRabbitMqCtx, RabbitMqCancel := context.WithCancel(context.Background())
+	defer RabbitMqCancel()
+
+	chanRabbitMqErr := make(chan error, 1)
+	go func() {
+		log.Printf("rabbitmq consumer started")
+		processJob := func(ctx context.Context, jobID uint64) error {
+			jobCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+
+			return chatJobService.Process(jobCtx, jobID)
+		}
+
+		chanRabbitMqErr <- rabbitMqClient.ConsumeChatJobs(cancelRabbitMqCtx, processJob)
+	}()
+
 	limitString := os.Getenv("CHAT_RATE_LIMIT")
 	limit, err := strconv.ParseInt(limitString, 10, 64)
 	if err != nil {
@@ -136,7 +170,7 @@ func run() error {
 
 	checker := httpapi.NewHealthHandler(readinessChecker)
 
-	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler, checker, tokenManager, chatRateLimiter)
+	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler, checker, chatJobHandler, tokenManager, chatRateLimiter)
 
 	server := &http.Server{
 		Addr:           IPAddr + Port,
@@ -159,10 +193,15 @@ func run() error {
 		if err != nil && err != http.ErrServerClosed {
 			return fmt.Errorf("server error: %w", err)
 		}
+	case err := <-chanRabbitMqErr:
+		if err != nil {
+			return fmt.Errorf("rabbitmq error: %w", err)
+		}
 	case <-shutdown.Done():
 		log.Printf("shutting down server")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		RabbitMqCancel()
 		if err := server.Shutdown(ctx); err != nil {
 			return fmt.Errorf("shutdown server error: %w", err)
 		}
@@ -170,6 +209,15 @@ func run() error {
 		if err := <-serverErrors; err != nil && err != http.ErrServerClosed {
 			return err
 		}
+		select {
+		case err := <-chanRabbitMqErr:
+			if err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return fmt.Errorf("rabbitmq shutdown timeout: %w", ctx.Err())
+		}
+
 	}
 
 	return nil
