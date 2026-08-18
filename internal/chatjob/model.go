@@ -18,6 +18,7 @@ type Job struct {
 	Status             Status
 	AssistantMessageID *uint64
 	ErrorCode          *string
+	AttemptCount       int64
 	CreatedAt          time.Time
 	StartedAt          *time.Time
 	FinishedAt         *time.Time

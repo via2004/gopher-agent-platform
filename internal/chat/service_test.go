@@ -274,6 +274,49 @@ func TestServiceReceiveAndResponse(t *testing.T) {
 	}
 }
 
+func TestServiceRespondToMessageUsesExistingRequestMessage(t *testing.T) {
+	calls := make([]string, 0, 5)
+	assistant := &message.Message{
+		ID:             3,
+		ConversationID: 9,
+		Role:           message.RoleAssistant,
+		Content:        "An interface describes behavior.",
+	}
+	messages := &fakeMessageService{
+		calls: &calls,
+		recent: []*message.Message{
+			{ID: 2, ConversationID: 9, Role: message.RoleUser, Content: "What is an interface?"},
+		},
+		assistant: assistant,
+	}
+	modelResult := &llm.Result{Content: assistant.Content, Model: "gpt-test-actual"}
+	model := &fakeLLMClient{calls: &calls, result: modelResult}
+	modelCalls := &fakeModelCallService{calls: &calls}
+	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
+	service := NewService(messages, model, modelCalls, transactions)
+
+	got, err := service.RespondToMessage(context.Background(), 7, 9, 2)
+	if err != nil {
+		t.Fatalf("RespondToMessage() error = %v", err)
+	}
+	if got.ID != assistant.ID || got.Content != assistant.Content {
+		t.Fatalf("RespondToMessage() result = %#v", got)
+	}
+	if want := []string{"model-start", "recent", "llm", "assistant", "model-complete"}; !equalStrings(calls, want) {
+		t.Fatalf("call order = %v, want %v", calls, want)
+	}
+	if messages.createUserCtx != nil {
+		t.Fatal("RespondToMessage() created a duplicate user message")
+	}
+	if modelCalls.started == nil || modelCalls.started.RequestMessageID != 2 ||
+		modelCalls.started.ConversationID != 9 || modelCalls.startUserID != 7 {
+		t.Fatalf("started model call = %#v for user %d", modelCalls.started, modelCalls.startUserID)
+	}
+	if transactions.calls != 1 {
+		t.Fatalf("transaction calls = %d, want 1 for assistant completion", transactions.calls)
+	}
+}
+
 func TestServiceReceiveAndResponseStopsAfterFailure(t *testing.T) {
 	userErr := errors.New("create user message")
 	recentErr := errors.New("list recent messages")

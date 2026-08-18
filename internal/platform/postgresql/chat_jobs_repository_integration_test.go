@@ -15,6 +15,7 @@ import (
 	"gopherai/internal/chatjob"
 	"gopherai/internal/conversation"
 	"gopherai/internal/message"
+	"gopherai/internal/modelcall"
 )
 
 func TestChatJobsRepository(t *testing.T) {
@@ -82,11 +83,41 @@ func TestChatJobsRepository(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimForProcessing() error = %v", err)
 	}
-	if claimedUserID != ownerID || claimed.Status != chatjob.StatusProcessing || claimed.StartedAt == nil {
+	if claimedUserID != ownerID || claimed.Status != chatjob.StatusProcessing ||
+		claimed.AttemptCount != 1 || claimed.StartedAt == nil {
 		t.Fatalf("ClaimForProcessing() = (%#v, user %d), want processing job for user %d", claimed, claimedUserID, ownerID)
 	}
 	if _, _, err := repo.ClaimForProcessing(ctx, completedJob.ID); !errors.Is(err, chatjob.ErrJobNotClaimable) {
 		t.Fatalf("repeated ClaimForProcessing() error = %v, want %v", err, chatjob.ErrJobNotClaimable)
+	}
+
+	requestMessageID, err := repo.EnsureRequestMessage(ctx, ownerID, completedJob.ID)
+	if err != nil || requestMessageID == 0 {
+		t.Fatalf("EnsureRequestMessage() = (%d, %v), want a message ID", requestMessageID, err)
+	}
+	requestMessageIDAgain, err := repo.EnsureRequestMessage(ctx, ownerID, completedJob.ID)
+	if err != nil || requestMessageIDAgain != requestMessageID {
+		t.Fatalf("repeated EnsureRequestMessage() = (%d, %v), want (%d, nil)",
+			requestMessageIDAgain, err, requestMessageID)
+	}
+	if assistantMessageID, ok, err := repo.FindCompletedAssistantID(ctx, ownerID, completedJob.ID); err != nil || ok || assistantMessageID != 0 {
+		t.Fatalf("FindCompletedAssistantID() before model completion = (%d, %t, %v)",
+			assistantMessageID, ok, err)
+	}
+
+	if err := repo.Retry(ctx, completedJob.ID); err != nil {
+		t.Fatalf("Retry() error = %v", err)
+	}
+	retried, err := repo.GetByID(ctx, ownerID, completedJob.ID)
+	if err != nil || retried.Status != chatjob.StatusPending || retried.AttemptCount != 1 || retried.StartedAt != nil {
+		t.Fatalf("retried job = %#v, error = %v", retried, err)
+	}
+	claimed, claimedUserID, err = repo.ClaimForProcessing(ctx, completedJob.ID)
+	if err != nil || claimedUserID != ownerID || claimed.AttemptCount != 2 {
+		t.Fatalf("second ClaimForProcessing() = (%#v, user %d, %v)", claimed, claimedUserID, err)
+	}
+	if got, err := repo.EnsureRequestMessage(ctx, ownerID, completedJob.ID); err != nil || got != requestMessageID {
+		t.Fatalf("EnsureRequestMessage() after retry = (%d, %v), want (%d, nil)", got, err, requestMessageID)
 	}
 
 	messageRepo := NewMessageRepository(pool)
@@ -97,6 +128,28 @@ func TestChatJobsRepository(t *testing.T) {
 	}
 	if err := messageRepo.Create(ctx, ownerID, assistant); err != nil {
 		t.Fatalf("create assistant message: %v", err)
+	}
+	requestedModel := "gpt-test-requested"
+	actualModel := "gpt-test-actual"
+	modelCall := &modelcall.Model{
+		ConversationID:   ownedConversation.ID,
+		RequestMessageID: requestMessageID,
+		Provider:         "test",
+		RequestedModel:   &requestedModel,
+	}
+	modelRepo := NewModelRepository(pool)
+	if err := modelRepo.Create(ctx, ownerID, modelCall); err != nil {
+		t.Fatalf("create model call: %v", err)
+	}
+	modelCall.AssistantMessageID = &assistant.ID
+	modelCall.ActualModel = &actualModel
+	if err := modelRepo.CompleteModelCall(ctx, ownerID, modelCall); err != nil {
+		t.Fatalf("complete model call: %v", err)
+	}
+	foundAssistantID, ok, err := repo.FindCompletedAssistantID(ctx, ownerID, completedJob.ID)
+	if err != nil || !ok || foundAssistantID != assistant.ID {
+		t.Fatalf("FindCompletedAssistantID() = (%d, %t, %v), want (%d, true, nil)",
+			foundAssistantID, ok, err, assistant.ID)
 	}
 	if err := repo.Complete(ctx, completedJob.ID, assistant.ID); err != nil {
 		t.Fatalf("Complete() error = %v", err)
@@ -162,7 +215,7 @@ func assertPendingChatJob(t *testing.T, job *chatjob.Job, conversationID uint64,
 	t.Helper()
 
 	if job.ID == 0 || job.ConversationID != conversationID || job.Content != content ||
-		job.Status != chatjob.StatusPending || job.AssistantMessageID != nil || job.ErrorCode != nil ||
+		job.Status != chatjob.StatusPending || job.AttemptCount != 0 || job.AssistantMessageID != nil || job.ErrorCode != nil ||
 		job.CreatedAt.IsZero() || job.StartedAt != nil || job.FinishedAt != nil {
 		t.Fatalf("pending job = %#v", job)
 	}

@@ -64,8 +64,16 @@ func run() error {
 		return fmt.Errorf("new token manager: %w", err)
 	}
 
-	pool, err := pgxpool.New(context.Background(), databaseURL)
+	maxAttemptCountString := os.Getenv("CHAT_JOB_MAX_ATTEMPTS")
+	maxAttemptCount, err := strconv.ParseInt(maxAttemptCountString, 10, 64)
+	if err != nil {
+		return fmt.Errorf("parse CHAT_JOB_MAX_ATTEMPTS: %w", err)
+	}
+	if maxAttemptCount <= 0 {
+		return fmt.Errorf("CHAT_JOB_MAX_ATTEMPTS must be positive")
+	}
 
+	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
 		return fmt.Errorf("new pgxpool error: %w", err)
 	}
@@ -107,7 +115,7 @@ func run() error {
 	}
 	defer rabbitMqClient.Close()
 
-	chatJobService := chatjob.NewService(chatJobRepository, rabbitMqClient, chatService)
+	chatJobService := chatjob.NewService(chatJobRepository, rabbitMqClient, chatService, maxAttemptCount)
 	chatJobHandler := httpapi.NewChatJobHandler(chatJobService)
 
 	cancelRabbitMqCtx, RabbitMqCancel := context.WithCancel(context.Background())

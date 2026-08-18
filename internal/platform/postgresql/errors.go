@@ -10,4 +10,5 @@ var (
 	ErrClaimPendingChatJobFailed = errors.New("claim pending jobs failed")
 	ErrCompleteChatJobFailed     = errors.New("complete chat job failed")
 	ErrFailChatJobFailed         = errors.New("fail chat job failed")
+	ErrUpdateChatJobFailed       = errors.New("update chat job failed")
 )

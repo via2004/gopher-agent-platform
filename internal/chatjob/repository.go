@@ -20,6 +20,9 @@ type Repository interface {
 		返回Job和userID
 	*/
 	ClaimForProcessing(ctx context.Context, jobID uint64) (*Job, uint64, error)
+	Retry(ctx context.Context, jobID uint64) error
+	EnsureRequestMessage(ctx context.Context, userID, jobID uint64) (uint64, error)
+	FindCompletedAssistantID(ctx context.Context, userID, jobID uint64) (uint64, bool, error)
 
 	Complete(ctx context.Context, jobID, assistantMessageID uint64) error
 	Fail(ctx context.Context, jobID uint64, errorCode string) error
@@ -47,6 +50,6 @@ type Publisher interface {
 }
 
 type ChatProcessor interface {
-	ReceiveAndResponse(ctx context.Context, userID uint64,
-		conversationID uint64, content string) (*chat.Result, error)
+	RespondToMessage(ctx context.Context, userID uint64,
+		conversationID uint64, requestMessageID uint64) (*chat.Result, error)
 }

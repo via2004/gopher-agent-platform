@@ -10,6 +10,8 @@ import (
 	"gopherai/internal/conversation"
 )
 
+const fakeMaxAttemptCount = 5
+
 type fakeRepository struct {
 	createCalls          int
 	createCtx            context.Context
@@ -32,6 +34,27 @@ type fakeRepository struct {
 	claimed    *Job
 	claimUser  uint64
 	claimErr   error
+
+	retryCalls        int
+	retryCtx          context.Context
+	retryCtxErrAtCall error
+	retryJobID        uint64
+	retryErr          error
+
+	ensureCalls      int
+	ensureCtx        context.Context
+	ensureUserID     uint64
+	ensureJobID      uint64
+	requestMessageID uint64
+	ensureErr        error
+
+	findCalls               int
+	findCtx                 context.Context
+	findUserID              uint64
+	findJobID               uint64
+	foundAssistantMessageID uint64
+	foundAssistant          bool
+	findErr                 error
 
 	completeCalls     int
 	completeCtx       context.Context
@@ -88,6 +111,30 @@ func (f *fakeRepository) Fail(ctx context.Context, jobID uint64, errorCode strin
 	return f.failErr
 }
 
+func (f *fakeRepository) Retry(ctx context.Context, jobID uint64) error {
+	f.retryCalls++
+	f.retryCtx = ctx
+	f.retryCtxErrAtCall = ctx.Err()
+	f.retryJobID = jobID
+	return f.retryErr
+}
+
+func (f *fakeRepository) EnsureRequestMessage(ctx context.Context, userID, jobID uint64) (uint64, error) {
+	f.ensureCalls++
+	f.ensureCtx = ctx
+	f.ensureUserID = userID
+	f.ensureJobID = jobID
+	return f.requestMessageID, f.ensureErr
+}
+
+func (f *fakeRepository) FindCompletedAssistantID(ctx context.Context, userID, jobID uint64) (uint64, bool, error) {
+	f.findCalls++
+	f.findCtx = ctx
+	f.findUserID = userID
+	f.findJobID = jobID
+	return f.foundAssistantMessageID, f.foundAssistant, f.findErr
+}
+
 type fakePublisher struct {
 	calls int
 	ctx   context.Context
@@ -103,25 +150,22 @@ func (f *fakePublisher) PublishChatJob(ctx context.Context, jobID uint64) error 
 }
 
 type fakeChatProcessor struct {
-	calls          int
-	ctx            context.Context
-	userID         uint64
-	conversationID uint64
-	content        string
-	result         *chat.Result
-	err            error
+	calls            int
+	ctx              context.Context
+	userID           uint64
+	conversationID   uint64
+	requestMessageID uint64
+	result           *chat.Result
+	err              error
 }
 
-func (f *fakeChatProcessor) ReceiveAndResponse(
-	ctx context.Context,
-	userID, conversationID uint64,
-	content string,
-) (*chat.Result, error) {
+func (f *fakeChatProcessor) RespondToMessage(ctx context.Context, userID uint64,
+	conversationID uint64, requestMessageID uint64) (*chat.Result, error) {
 	f.calls++
 	f.ctx = ctx
 	f.userID = userID
 	f.conversationID = conversationID
-	f.content = content
+	f.requestMessageID = requestMessageID
 	return f.result, f.err
 }
 
@@ -130,7 +174,7 @@ func TestServiceCreate(t *testing.T) {
 	created := &Job{ID: 41, ConversationID: 9, Content: "question", Status: StatusPending}
 	repo := &fakeRepository{created: created}
 	publisher := &fakePublisher{}
-	service := NewService(repo, publisher, &fakeChatProcessor{})
+	service := NewService(repo, publisher, &fakeChatProcessor{}, fakeMaxAttemptCount)
 
 	got, err := service.Create(ctx, 7, 9, "  question  ")
 	if err != nil {
@@ -168,7 +212,7 @@ func TestServiceCreateRejectsInvalidInput(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepository{}
 			publisher := &fakePublisher{}
-			service := NewService(repo, publisher, &fakeChatProcessor{})
+			service := NewService(repo, publisher, &fakeChatProcessor{}, fakeMaxAttemptCount)
 
 			got, err := service.Create(context.Background(), tt.userID, tt.conversationID, tt.content)
 			if !errors.Is(err, tt.wantErr) {
@@ -191,7 +235,7 @@ func TestServiceCreateStopsAfterDependencyFailure(t *testing.T) {
 	t.Run("repository", func(t *testing.T) {
 		repo := &fakeRepository{createErr: repoErr}
 		publisher := &fakePublisher{}
-		service := NewService(repo, publisher, &fakeChatProcessor{})
+		service := NewService(repo, publisher, &fakeChatProcessor{}, fakeMaxAttemptCount)
 
 		got, err := service.Create(context.Background(), 7, 9, "question")
 		if !errors.Is(err, repoErr) || got != nil {
@@ -205,7 +249,7 @@ func TestServiceCreateStopsAfterDependencyFailure(t *testing.T) {
 	t.Run("publisher", func(t *testing.T) {
 		repo := &fakeRepository{created: &Job{ID: 41}}
 		publisher := &fakePublisher{err: publishErr}
-		service := NewService(repo, publisher, &fakeChatProcessor{})
+		service := NewService(repo, publisher, &fakeChatProcessor{}, fakeMaxAttemptCount)
 
 		got, err := service.Create(context.Background(), 7, 9, "question")
 		if !errors.Is(err, publishErr) || got != nil {
@@ -218,7 +262,7 @@ func TestServiceGetByID(t *testing.T) {
 	ctx := context.WithValue(context.Background(), struct{}{}, "request")
 	want := &Job{ID: 41, ConversationID: 9, Status: StatusProcessing}
 	repo := &fakeRepository{got: want}
-	service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{})
+	service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{}, fakeMaxAttemptCount)
 
 	got, err := service.GetByID(ctx, 7, 41)
 	if err != nil || got != want {
@@ -239,7 +283,7 @@ func TestServiceGetByID(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepository{}
-			service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{})
+			service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{}, fakeMaxAttemptCount)
 			if _, err := service.GetByID(context.Background(), tt.userID, tt.jobID); !errors.Is(err, tt.wantErr) {
 				t.Fatalf("GetByID() error = %v, want %v", err, tt.wantErr)
 			}
@@ -253,11 +297,12 @@ func TestServiceGetByID(t *testing.T) {
 func TestServiceProcessCompletesJob(t *testing.T) {
 	ctx := context.WithValue(context.Background(), struct{}{}, "worker")
 	repo := &fakeRepository{
-		claimed:   &Job{ID: 41, ConversationID: 9, Content: "question", Status: StatusProcessing},
-		claimUser: 7,
+		claimed:          &Job{ID: 41, ConversationID: 9, Content: "question", Status: StatusProcessing, AttemptCount: 1},
+		claimUser:        7,
+		requestMessageID: 51,
 	}
 	processor := &fakeChatProcessor{result: &chat.Result{ID: 52}}
-	service := NewService(repo, &fakePublisher{}, processor)
+	service := NewService(repo, &fakePublisher{}, processor, fakeMaxAttemptCount)
 
 	if err := service.Process(ctx, 41); err != nil {
 		t.Fatalf("Process() error = %v", err)
@@ -265,16 +310,142 @@ func TestServiceProcessCompletesJob(t *testing.T) {
 	if repo.claimCalls != 1 || repo.claimJobID != 41 || repo.claimCtx != ctx {
 		t.Fatalf("ClaimForProcessing() = %d calls with job ID %d", repo.claimCalls, repo.claimJobID)
 	}
+	if repo.ensureCalls != 1 || repo.ensureUserID != 7 || repo.ensureJobID != 41 || repo.ensureCtx != ctx {
+		t.Fatalf("EnsureRequestMessage() = %d calls with user %d and job %d",
+			repo.ensureCalls, repo.ensureUserID, repo.ensureJobID)
+	}
+	if repo.findCalls != 1 || repo.findUserID != 7 || repo.findJobID != 41 || repo.findCtx != ctx {
+		t.Fatalf("FindCompletedAssistantID() = %d calls with user %d and job %d",
+			repo.findCalls, repo.findUserID, repo.findJobID)
+	}
 	if processor.calls != 1 || processor.ctx != ctx || processor.userID != 7 ||
-		processor.conversationID != 9 || processor.content != "question" {
-		t.Fatalf("ReceiveAndResponse() = %d calls with user %d, conversation %d, content %q",
-			processor.calls, processor.userID, processor.conversationID, processor.content)
+		processor.conversationID != 9 || processor.requestMessageID != 51 {
+		t.Fatalf("RespondToMessage() = %d calls with user %d, conversation %d, request message %d",
+			processor.calls, processor.userID, processor.conversationID, processor.requestMessageID)
 	}
 	if repo.completeCalls != 1 || repo.completeJobID != 41 || repo.completeMessageID != 52 || repo.completeCtx != ctx {
 		t.Fatalf("Complete() = %d calls with job %d and message %d", repo.completeCalls, repo.completeJobID, repo.completeMessageID)
 	}
 	if repo.failCalls != 0 {
 		t.Fatalf("Fail() calls = %d, want 0", repo.failCalls)
+	}
+}
+
+func TestServiceProcessCompletesRecoveredAssistantMessage(t *testing.T) {
+	ctx := context.WithValue(context.Background(), struct{}{}, "worker")
+	repo := &fakeRepository{
+		claimed:                 &Job{ID: 41, ConversationID: 9, AttemptCount: 2},
+		claimUser:               7,
+		requestMessageID:        51,
+		foundAssistantMessageID: 52,
+		foundAssistant:          true,
+	}
+	processor := &fakeChatProcessor{}
+	service := NewService(repo, &fakePublisher{}, processor, fakeMaxAttemptCount)
+
+	if err := service.Process(ctx, 41); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if processor.calls != 0 {
+		t.Fatalf("RespondToMessage() calls = %d, want 0", processor.calls)
+	}
+	if repo.completeCalls != 1 || repo.completeJobID != 41 || repo.completeMessageID != 52 {
+		t.Fatalf("Complete() = %d calls with job %d and message %d",
+			repo.completeCalls, repo.completeJobID, repo.completeMessageID)
+	}
+	if repo.retryCalls != 0 || repo.failCalls != 0 {
+		t.Fatalf("terminal calls after recovery: Retry=%d Fail=%d, want both 0", repo.retryCalls, repo.failCalls)
+	}
+}
+
+func TestServiceProcessRetriesPreparationFailureBeforeLimit(t *testing.T) {
+	stageErr := errors.New("preparation failed")
+	tests := []struct {
+		name      string
+		configure func(*fakeRepository)
+		wantFind  int
+	}{
+		{
+			name: "ensure request message",
+			configure: func(repo *fakeRepository) {
+				repo.ensureErr = stageErr
+			},
+		},
+		{
+			name: "find completed assistant",
+			configure: func(repo *fakeRepository) {
+				repo.findErr = stageErr
+			},
+			wantFind: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepository{
+				claimed:          &Job{ID: 41, ConversationID: 9, AttemptCount: fakeMaxAttemptCount - 1},
+				claimUser:        7,
+				requestMessageID: 51,
+			}
+			tt.configure(repo)
+			processor := &fakeChatProcessor{}
+			service := NewService(repo, &fakePublisher{}, processor, fakeMaxAttemptCount)
+
+			err := service.Process(context.Background(), 41)
+			if !errors.Is(err, stageErr) {
+				t.Fatalf("Process() error = %v, want %v", err, stageErr)
+			}
+			if repo.retryCalls != 1 || repo.retryJobID != 41 || repo.retryCtxErrAtCall != nil {
+				t.Fatalf("Retry() = %d calls with job %d and context error %v",
+					repo.retryCalls, repo.retryJobID, repo.retryCtxErrAtCall)
+			}
+			if repo.findCalls != tt.wantFind || processor.calls != 0 || repo.failCalls != 0 {
+				t.Fatalf("calls after preparation failure: Find=%d Chat=%d Fail=%d",
+					repo.findCalls, processor.calls, repo.failCalls)
+			}
+		})
+	}
+}
+
+func TestServiceProcessFailsPreparationAtLimit(t *testing.T) {
+	stageErr := errors.New("preparation failed")
+	tests := []struct {
+		name      string
+		configure func(*fakeRepository)
+	}{
+		{
+			name: "ensure request message",
+			configure: func(repo *fakeRepository) {
+				repo.ensureErr = stageErr
+			},
+		},
+		{
+			name: "find completed assistant",
+			configure: func(repo *fakeRepository) {
+				repo.findErr = stageErr
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepository{
+				claimed:          &Job{ID: 41, ConversationID: 9, AttemptCount: fakeMaxAttemptCount},
+				claimUser:        7,
+				requestMessageID: 51,
+			}
+			tt.configure(repo)
+			service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{}, fakeMaxAttemptCount)
+
+			if err := service.Process(context.Background(), 41); err != nil {
+				t.Fatalf("Process() error = %v, want nil after recording terminal failure", err)
+			}
+			if repo.retryCalls != 0 || repo.failCalls != 1 || repo.failJobID != 41 ||
+				repo.failErrorCode != ErrorCodeOverMaxRetryTime || repo.failCtxErrAtCall != nil {
+				t.Fatalf("terminal calls: Retry=%d Fail=%d job=%d code=%q context error=%v",
+					repo.retryCalls, repo.failCalls, repo.failJobID, repo.failErrorCode, repo.failCtxErrAtCall)
+			}
+		})
 	}
 }
 
@@ -295,7 +466,7 @@ func TestServiceProcessStopsBeforeChat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepository{claimErr: tt.claimErr}
 			processor := &fakeChatProcessor{}
-			service := NewService(repo, &fakePublisher{}, processor)
+			service := NewService(repo, &fakePublisher{}, processor, fakeMaxAttemptCount)
 
 			err := service.Process(context.Background(), tt.jobID)
 			switch tt.name {
@@ -332,9 +503,13 @@ func TestServiceProcessRecordsChatFailure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			repo := &fakeRepository{claimed: &Job{ID: 41, ConversationID: 9, Content: "question"}, claimUser: 7}
+			repo := &fakeRepository{
+				claimed:          &Job{ID: 41, ConversationID: 9, Content: "question", AttemptCount: fakeMaxAttemptCount},
+				claimUser:        7,
+				requestMessageID: 51,
+			}
 			processor := &fakeChatProcessor{err: tt.chatErr}
-			service := NewService(repo, &fakePublisher{}, processor)
+			service := NewService(repo, &fakePublisher{}, processor, fakeMaxAttemptCount)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			if tt.name == "chat failure" {
@@ -362,15 +537,39 @@ func TestServiceProcessReturnsChatAndPersistenceFailures(t *testing.T) {
 	chatErr := errors.New("provider failed")
 	failErr := errors.New("record failure failed")
 	repo := &fakeRepository{
-		claimed:   &Job{ID: 41, ConversationID: 9, Content: "question"},
-		claimUser: 7,
-		failErr:   failErr,
+		claimed:          &Job{ID: 41, ConversationID: 9, Content: "question", AttemptCount: fakeMaxAttemptCount},
+		claimUser:        7,
+		requestMessageID: 51,
+		failErr:          failErr,
 	}
-	service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{err: chatErr})
+	service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{err: chatErr}, fakeMaxAttemptCount)
 
 	err := service.Process(context.Background(), 41)
 	if !errors.Is(err, chatErr) || !errors.Is(err, failErr) {
 		t.Fatalf("Process() error = %v, want both chat and persistence failures", err)
+	}
+}
+
+func TestServiceProcessRetriesChatFailureBeforeLimit(t *testing.T) {
+	chatErr := errors.New("provider failed")
+	repo := &fakeRepository{
+		claimed:          &Job{ID: 41, ConversationID: 9, AttemptCount: fakeMaxAttemptCount - 1},
+		claimUser:        7,
+		requestMessageID: 51,
+	}
+	service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{err: chatErr}, fakeMaxAttemptCount)
+
+	err := service.Process(context.Background(), 41)
+	if !errors.Is(err, chatErr) {
+		t.Fatalf("Process() error = %v, want %v", err, chatErr)
+	}
+	if repo.retryCalls != 1 || repo.retryJobID != 41 || repo.retryCtxErrAtCall != nil {
+		t.Fatalf("Retry() = %d calls with job %d and context error %v",
+			repo.retryCalls, repo.retryJobID, repo.retryCtxErrAtCall)
+	}
+	if repo.failCalls != 0 || repo.completeCalls != 0 {
+		t.Fatalf("terminal calls after retryable chat failure: Fail=%d Complete=%d",
+			repo.failCalls, repo.completeCalls)
 	}
 }
 
@@ -384,7 +583,7 @@ func TestServiceProcessRejectsInvalidChatResult(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepository{claimed: &Job{ID: 41, ConversationID: 9, Content: "question"}, claimUser: 7}
-			service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{result: tt.result})
+			service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{result: tt.result}, fakeMaxAttemptCount)
 
 			if err := service.Process(context.Background(), 41); err != nil {
 				t.Fatalf("Process() error = %v, want nil after recording invalid result", err)
@@ -404,7 +603,7 @@ func TestServiceProcessReturnsInvalidResultAndPersistenceFailures(t *testing.T) 
 		claimUser: 7,
 		failErr:   failErr,
 	}
-	service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{})
+	service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{}, fakeMaxAttemptCount)
 
 	err := service.Process(context.Background(), 41)
 	if !errors.Is(err, ErrInvalidChatResult) || !errors.Is(err, failErr) {
@@ -415,11 +614,12 @@ func TestServiceProcessReturnsInvalidResultAndPersistenceFailures(t *testing.T) 
 func TestServiceProcessReturnsCompletionFailure(t *testing.T) {
 	completeErr := errors.New("complete failed")
 	repo := &fakeRepository{
-		claimed:     &Job{ID: 41, ConversationID: 9, Content: "question"},
-		claimUser:   7,
-		completeErr: completeErr,
+		claimed:          &Job{ID: 41, ConversationID: 9, Content: "question", AttemptCount: 1},
+		claimUser:        7,
+		requestMessageID: 51,
+		completeErr:      completeErr,
 	}
-	service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{result: &chat.Result{ID: 52}})
+	service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{result: &chat.Result{ID: 52}}, fakeMaxAttemptCount)
 
 	if err := service.Process(context.Background(), 41); !errors.Is(err, completeErr) {
 		t.Fatalf("Process() error = %v, want %v", err, completeErr)
@@ -427,11 +627,43 @@ func TestServiceProcessReturnsCompletionFailure(t *testing.T) {
 	if repo.failCalls != 0 {
 		t.Fatalf("Fail() calls = %d, want 0", repo.failCalls)
 	}
+	if repo.retryCalls != 1 || repo.retryJobID != 41 || repo.retryCtxErrAtCall != nil {
+		t.Fatalf("Retry() = %d calls with job %d and context error %v",
+			repo.retryCalls, repo.retryJobID, repo.retryCtxErrAtCall)
+	}
+}
+
+func TestServiceProcessFailsCompletionAtLimit(t *testing.T) {
+	completeErr := errors.New("complete failed")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repo := &fakeRepository{
+		claimed:                 &Job{ID: 41, ConversationID: 9, AttemptCount: fakeMaxAttemptCount},
+		claimUser:               7,
+		requestMessageID:        51,
+		foundAssistantMessageID: 52,
+		foundAssistant:          true,
+		completeErr:             completeErr,
+	}
+	service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{}, fakeMaxAttemptCount)
+
+	if err := service.Process(ctx, 41); err != nil {
+		t.Fatalf("Process() error = %v, want nil after recording terminal failure", err)
+	}
+	if repo.retryCalls != 0 || repo.failCalls != 1 || repo.failJobID != 41 ||
+		repo.failErrorCode != ErrorCodeCompleteFailed || repo.failCtxErrAtCall != nil {
+		t.Fatalf("terminal calls: Retry=%d Fail=%d job=%d code=%q context error=%v",
+			repo.retryCalls, repo.failCalls, repo.failJobID, repo.failErrorCode, repo.failCtxErrAtCall)
+	}
 }
 
 func TestCleanupContextHasDeadline(t *testing.T) {
-	repo := &fakeRepository{claimed: &Job{ID: 41, ConversationID: 9, Content: "question"}, claimUser: 7}
-	service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{err: context.DeadlineExceeded})
+	repo := &fakeRepository{
+		claimed:          &Job{ID: 41, ConversationID: 9, Content: "question", AttemptCount: fakeMaxAttemptCount},
+		claimUser:        7,
+		requestMessageID: 51,
+	}
+	service := NewService(repo, &fakePublisher{}, &fakeChatProcessor{err: context.DeadlineExceeded}, fakeMaxAttemptCount)
 
 	if err := service.Process(context.Background(), 41); err != nil {
 		t.Fatalf("Process() error = %v", err)

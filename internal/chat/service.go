@@ -46,7 +46,22 @@ type generateFunc func(context.Context, []llm.Message) (*llm.Result, error)
 func (s *Service) ReceiveAndResponse(ctx context.Context, userID uint64,
 	conversationID uint64, content string) (*Result, error) {
 
-	return s.receive(ctx, userID, conversationID, content, s.model.Generate)
+	model, err := s.receive(ctx, userID, conversationID, content)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.respond(ctx, userID, conversationID, model, s.model.Generate)
+}
+
+func (s *Service) RespondToMessage(ctx context.Context, userID uint64,
+	conversationID uint64, requestMessageID uint64) (*Result, error) {
+	model, err := s.startModelCallForExistingMessage(ctx, userID, requestMessageID, conversationID)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.respond(ctx, userID, conversationID, model, s.model.Generate)
 }
 
 func (s *Service) ChatStreaming(ctx context.Context, userID uint64,
@@ -55,7 +70,12 @@ func (s *Service) ChatStreaming(ctx context.Context, userID uint64,
 		return s.model.GenerateStream(ctx, messages, onDelta)
 	}
 
-	return s.receive(ctx, userID, conversationID, content, generate)
+	model, err := s.receive(ctx, userID, conversationID, content)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.respond(ctx, userID, conversationID, model, generate)
 }
 
 func toLLMMessages(messages []*message.Message) []llm.Message {
@@ -91,6 +111,22 @@ func (s *Service) startModelCall(ctx context.Context, userID, conversationID uin
 
 		return modelCalls.Start(ctx, userID, model)
 	})
+}
+
+func (s *Service) startModelCallForExistingMessage(ctx context.Context, userID, requestMessageID, conversationID uint64) (*modelcall.Model, error) {
+	model := &modelcall.Model{
+		ConversationID:   conversationID,
+		RequestMessageID: requestMessageID,
+	}
+	info := s.model.Info()
+
+	model.RequestedModel = &info.Model
+	model.Provider = info.Provider
+
+	if err := s.modelCall.Start(ctx, userID, model); err != nil {
+		return nil, err
+	}
+	return model, nil
 }
 
 func (s *Service) saveAssistantAndComplete(ctx context.Context, userID,
@@ -142,8 +178,7 @@ func toResult(assistant *message.Message, modelResult *llm.Result) *Result {
 }
 
 func (s *Service) receive(ctx context.Context, userID uint64,
-	conversationID uint64, content string,
-	generate generateFunc) (*Result, error) {
+	conversationID uint64, content string) (*modelcall.Model, error) {
 
 	model := &modelcall.Model{
 		ConversationID: conversationID,
@@ -154,6 +189,12 @@ func (s *Service) receive(ctx context.Context, userID uint64,
 		return nil, err
 	}
 
+	return model, nil
+}
+
+func (s *Service) respond(ctx context.Context, userID uint64,
+	conversationID uint64, model *modelcall.Model,
+	generate generateFunc) (*Result, error) {
 	messages, err := s.messages.ListRecent(ctx, userID, conversationID, defaultMessageLimit)
 	if err != nil {
 		markModelCallFailure(model, err, "history_load")
