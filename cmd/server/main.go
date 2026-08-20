@@ -23,9 +23,11 @@ import (
 	"gopherai/internal/conversation"
 	"gopherai/internal/health"
 	"gopherai/internal/httpapi"
+	"gopherai/internal/image"
 	"gopherai/internal/llm"
 	"gopherai/internal/message"
 	"gopherai/internal/modelcall"
+	onnx "gopherai/internal/platform/onnx"
 	openaiplatform "gopherai/internal/platform/openai"
 	platform "gopherai/internal/platform/postgresql"
 	rabbitmq "gopherai/internal/platform/rabbitmq"
@@ -73,6 +75,23 @@ func run() error {
 		return fmt.Errorf("CHAT_JOB_MAX_ATTEMPTS must be positive")
 	}
 
+	// 接ONNX,图像分类模型
+	classifier, err := onnx.NewClassifier(onnx.Config{
+		SharedLibraryPath: os.Getenv(
+			"ONNXRUNTIME_SHARED_LIBRARY_PATH",
+		),
+		ModelPath:  os.Getenv("IMAGE_MODEL_PATH"),
+		LabelsPath: os.Getenv("IMAGE_LABELS_PATH"),
+	})
+	if err != nil {
+		return fmt.Errorf("initialize image classifier: %w", err)
+	}
+	defer func() {
+		if err := classifier.Close(); err != nil {
+			log.Printf("close image classifier: %v", err)
+		}
+	}()
+
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
 		return fmt.Errorf("new pgxpool error: %w", err)
@@ -117,6 +136,9 @@ func run() error {
 
 	chatJobService := chatjob.NewService(chatJobRepository, rabbitMqClient, chatService, maxAttemptCount)
 	chatJobHandler := httpapi.NewChatJobHandler(chatJobService)
+
+	imageService := image.NewService(classifier)
+	imageHandler := httpapi.NewImageHandler(imageService)
 
 	cancelRabbitMqCtx, RabbitMqCancel := context.WithCancel(context.Background())
 	defer RabbitMqCancel()
@@ -178,7 +200,8 @@ func run() error {
 
 	checker := httpapi.NewHealthHandler(readinessChecker)
 
-	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler, checker, chatJobHandler, tokenManager, chatRateLimiter)
+	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler,
+		checker, chatJobHandler, imageHandler, tokenManager, chatRateLimiter)
 
 	server := &http.Server{
 		Addr:           IPAddr + Port,

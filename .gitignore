@@ -1,2 +1,4 @@
 .env
 tmp/*
+models/*.onnx
+models/onnxruntime/
