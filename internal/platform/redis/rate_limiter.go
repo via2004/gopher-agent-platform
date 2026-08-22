@@ -8,6 +8,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const defaultRateLimiterPrefix = "gopherai:rate_limit:chat:user"
+
 // that's a lua script
 var allowScript = redis.NewScript(`
 	local current = redis.call("INCR", KEYS[1])
@@ -41,7 +43,7 @@ func NewRateLimiter(client *redis.Client, limit int64, window time.Duration) (*R
 		client: client,
 		limit:  limit,
 		window: window,
-		prefix: "gopherai:rate_limit:chat:user",
+		prefix: defaultRateLimiterPrefix,
 	}, nil
 }
 
