@@ -27,11 +27,13 @@ import (
 	"gopherai/internal/llm"
 	"gopherai/internal/message"
 	"gopherai/internal/modelcall"
+	filesystem "gopherai/internal/platform/filesystem"
 	onnx "gopherai/internal/platform/onnx"
 	openaiplatform "gopherai/internal/platform/openai"
 	platform "gopherai/internal/platform/postgresql"
 	rabbitmq "gopherai/internal/platform/rabbitmq"
 	redis_ "gopherai/internal/platform/redis"
+	"gopherai/internal/rag"
 	"gopherai/internal/user"
 )
 
@@ -124,37 +126,10 @@ func run() error {
 	modelRepository := platform.NewModelRepository(pool)
 	modelCall := modelcall.NewService(modelRepository)
 
-	chatService := chat.NewService(messageService, modelClient, modelCall, unitOfWork)
-	chatHandler := httpapi.NewChatHandler(chatService)
-
 	chatJobRepository := platform.NewChatJobsRepository(pool)
-	rabbitMqClient, err := rabbitmq.NewRabbitMQClient(rabbitmqURL)
-	if err != nil {
-		return fmt.Errorf("new rabbitmq client: %w", err)
-	}
-	defer rabbitMqClient.Close()
-
-	chatJobService := chatjob.NewService(chatJobRepository, rabbitMqClient, chatService, maxAttemptCount)
-	chatJobHandler := httpapi.NewChatJobHandler(chatJobService)
 
 	imageService := image.NewService(classifier)
 	imageHandler := httpapi.NewImageHandler(imageService)
-
-	cancelRabbitMqCtx, RabbitMqCancel := context.WithCancel(context.Background())
-	defer RabbitMqCancel()
-
-	chanRabbitMqErr := make(chan error, 1)
-	go func() {
-		log.Printf("rabbitmq consumer started")
-		processJob := func(ctx context.Context, jobID uint64) error {
-			jobCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			defer cancel()
-
-			return chatJobService.Process(jobCtx, jobID)
-		}
-
-		chanRabbitMqErr <- rabbitMqClient.ConsumeChatJobs(cancelRabbitMqCtx, processJob)
-	}()
 
 	limitString := os.Getenv("CHAT_RATE_LIMIT")
 	limit, err := strconv.ParseInt(limitString, 10, 64)
@@ -179,6 +154,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("parse REDIS_URL: %w", err)
 	}
+
 	client := redis.NewClient(options)
 	defer client.Close()
 
@@ -188,6 +164,61 @@ func run() error {
 		return fmt.Errorf("ping redis error: %w", err)
 	}
 	cancel()
+
+	documentStore, err := filesystem.NewRagStore(
+		os.Getenv("RAG_STORAGE_ROOT"),
+	)
+	if err != nil {
+		return err
+	}
+
+	chunkRepository, err := redis_.NewRAGChunkRepository(client)
+	if err != nil {
+		return err
+	}
+
+	embedder, err := buildEmbedder()
+	if err != nil {
+		return err
+	}
+
+	ragService, err := rag.NewService(
+		documentStore,
+		chunkRepository,
+		embedder,
+	)
+	if err != nil {
+		return err
+	}
+
+	ragHandler := httpapi.NewRAGHandler(ragService)
+
+	chatService := chat.NewService(messageService, modelClient, modelCall, unitOfWork, ragService)
+	chatHandler := httpapi.NewChatHandler(chatService)
+
+	rabbitMqClient, err := rabbitmq.NewRabbitMQClient(rabbitmqURL)
+	if err != nil {
+		return fmt.Errorf("new rabbitmq client: %w", err)
+	}
+	defer rabbitMqClient.Close()
+
+	cancelRabbitMqCtx, RabbitMqCancel := context.WithCancel(context.Background())
+	defer RabbitMqCancel()
+
+	chatJobService := chatjob.NewService(chatJobRepository, rabbitMqClient, chatService, maxAttemptCount)
+	chatJobHandler := httpapi.NewChatJobHandler(chatJobService)
+	chanRabbitMqErr := make(chan error, 1)
+	go func() {
+		log.Printf("rabbitmq consumer started")
+		processJob := func(ctx context.Context, jobID uint64) error {
+			jobCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+
+			return chatJobService.Process(jobCtx, jobID)
+		}
+
+		chanRabbitMqErr <- rabbitMqClient.ConsumeChatJobs(cancelRabbitMqCtx, processJob)
+	}()
 
 	chatRateLimiter, err := redis_.NewRateLimiter(client, limit, time.Duration(window)*time.Second)
 	if err != nil {
@@ -201,7 +232,7 @@ func run() error {
 	checker := httpapi.NewHealthHandler(readinessChecker)
 
 	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler,
-		checker, chatJobHandler, imageHandler, tokenManager, chatRateLimiter)
+		checker, chatJobHandler, imageHandler, ragHandler, tokenManager, chatRateLimiter)
 
 	server := &http.Server{
 		Addr:           IPAddr + Port,
@@ -285,6 +316,31 @@ func buildLLMClient() (llm.ModelClient, error) {
 		return nil, fmt.Errorf("new OpenAI client: %w", err)
 	}
 	return client, nil
+}
+
+func buildEmbedder() (rag.Embedder, error) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	model := os.Getenv("OPENAI_EMBEDDING_MODEL")
+	baseURL := os.Getenv("OPENAI_BASE_URL")
+	requiresAuth, err := envBool("OPENAI_REQUIRES_AUTH", true)
+	if err != nil {
+		return nil, err
+	}
+	embedder, err := openaiplatform.NewEmbedderWithConfig(
+		openaiplatform.EmbeddingConfig{
+			APIKey:       apiKey,
+			Model:        model,
+			BaseURL:      baseURL,
+			RequiresAuth: requiresAuth,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"new OpenAI embedder: %w", err,
+		)
+	}
+
+	return embedder, nil
 }
 
 func loadEnvironment() error {

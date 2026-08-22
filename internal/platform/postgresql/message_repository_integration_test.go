@@ -64,6 +64,16 @@ func TestMessageRepository(t *testing.T) {
 	if first.ID == 0 || first.CreatedAt.IsZero() || second.ID == 0 || second.CreatedAt.IsZero() {
 		t.Fatalf("Create() did not populate generated fields: first = %#v, second = %#v", first, second)
 	}
+	gotByID, err := repo.GetByID(ctx, userID, ownedConversation.ID, first.ID)
+	if err != nil || gotByID.ID != first.ID || gotByID.Content != first.Content {
+		t.Fatalf("GetByID() = %#v, %v, want message %d", gotByID, err, first.ID)
+	}
+	if _, err := repo.GetByID(ctx, otherUserID, ownedConversation.ID, first.ID); !errors.Is(err, message.ErrMessageNotFound) {
+		t.Fatalf("other user's GetByID() error = %v, want %v", err, message.ErrMessageNotFound)
+	}
+	if _, err := repo.GetByID(ctx, userID, emptyConversation.ID, first.ID); !errors.Is(err, message.ErrMessageNotFound) {
+		t.Fatalf("wrong conversation GetByID() error = %v, want %v", err, message.ErrMessageNotFound)
+	}
 
 	unauthorized := &message.Message{ConversationID: ownedConversation.ID, Role: message.RoleUser, Content: "must not be inserted"}
 	if err := repo.Create(ctx, otherUserID, unauthorized); !errors.Is(err, conversation.ErrConversationNotFound) {

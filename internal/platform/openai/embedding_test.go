@@ -39,6 +39,12 @@ func TestNewEmbedderValidatesConfiguration(t *testing.T) {
 	if _, err := NewEmbedder("key", ""); !errors.Is(err, ErrMissingModel) {
 		t.Fatalf("missing model error = %v", err)
 	}
+	if _, err := NewEmbedderWithConfig(EmbeddingConfig{RequiresAuth: true, Model: "model"}); !errors.Is(err, ErrMissingAPIKey) {
+		t.Fatalf("config missing key error = %v", err)
+	}
+	if _, err := NewEmbedderWithConfig(EmbeddingConfig{APIKey: "key"}); !errors.Is(err, ErrMissingModel) {
+		t.Fatalf("config missing model error = %v", err)
+	}
 }
 
 func TestEmbedderEmbedsBatchAndRestoresIndexOrder(t *testing.T) {

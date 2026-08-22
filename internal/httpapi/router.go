@@ -14,6 +14,7 @@ func NewRouter(
 	checker *HealthHandler,
 	chatjobHandler *ChatJobHandler,
 	imageHandler *ImageHandler,
+	ragHandler *RAGHandler,
 	tokens TokenVerifier,
 	limiter ChatRateLimiter,
 ) *gin.Engine {
@@ -49,6 +50,8 @@ func NewRouter(
 	authenticated.POST("/conversations/:id/chat/stream", chatRateLimit, chatHandler.ChatStreaming)
 	authenticated.POST("/conversations/:id/chat-jobs", chatRateLimit, chatjobHandler.Create)
 	authenticated.GET("/chat-jobs/:id", chatjobHandler.Get)
+
 	authenticated.POST("/images/recognitions", imageHandler.Recognize)
+	authenticated.POST("/rag/documents", ragHandler.Upload)
 	return router
 }

@@ -3,12 +3,14 @@ package chat
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"gopherai/internal/llm"
 	"gopherai/internal/message"
 	"gopherai/internal/modelcall"
+	"gopherai/internal/rag"
 )
 
 type fakeMessageService struct {
@@ -29,6 +31,112 @@ type fakeMessageService struct {
 	assistantErr   error
 }
 
+func (f *fakeMessageService) GetByID(_ context.Context, _, conversationID, messageID uint64) (*message.Message, error) {
+	if f.userMessage != nil && f.userMessage.ID == messageID && f.userMessage.ConversationID == conversationID {
+		return f.userMessage, nil
+	}
+	for _, item := range f.recent {
+		if item != nil && item.ID == messageID && item.ConversationID == conversationID {
+			return item, nil
+		}
+	}
+	return nil, message.ErrMessageNotFound
+}
+
+type noDocumentRetriever struct{}
+
+func (noDocumentRetriever) Retrieve(context.Context, uint64, string, int) ([]rag.Chunk, error) {
+	return nil, rag.ErrDocumentNotFound
+}
+
+type fakeRetriever struct {
+	query  string
+	topK   int
+	chunks []rag.Chunk
+	err    error
+}
+
+func (f *fakeRetriever) Retrieve(_ context.Context, _ uint64, query string, topK int) ([]rag.Chunk, error) {
+	f.query = query
+	f.topK = topK
+	return f.chunks, f.err
+}
+
+func TestPrepareModelMessagesAugmentsOnlyRequestMessage(t *testing.T) {
+	calls := make([]string, 0)
+	history := []*message.Message{
+		{ID: 1, ConversationID: 9, Role: message.RoleUser, Content: "earlier"},
+		{ID: 2, ConversationID: 9, Role: message.RoleAssistant, Content: "answer"},
+		{ID: 3, ConversationID: 9, Role: message.RoleUser, Content: "current question"},
+	}
+	messages := &fakeMessageService{calls: &calls, recent: history}
+	retriever := &fakeRetriever{chunks: []rag.Chunk{{Content: "reference one"}, {Content: "reference two"}}}
+	service := NewService(messages, nil, nil, nil, retriever)
+
+	got, err := service.prepareModelMessages(context.Background(), 7, 3, history)
+	if err != nil {
+		t.Fatalf("prepareModelMessages() error = %v", err)
+	}
+	if got[0].Content != "earlier" || got[1].Content != "answer" {
+		t.Fatalf("earlier messages changed: %#v", got)
+	}
+	for _, want := range []string{"reference one", "reference two", "current question"} {
+		if !strings.Contains(got[2].Content, want) {
+			t.Fatalf("RAG prompt = %q, want %q", got[2].Content, want)
+		}
+	}
+	if retriever.query != "current question" || retriever.topK != defaultRAGTopK {
+		t.Fatalf("Retrieve() query = %q, topK = %d", retriever.query, retriever.topK)
+	}
+}
+
+func TestPrepareModelMessagesWithoutDocumentKeepsOriginalMessages(t *testing.T) {
+	calls := make([]string, 0)
+	history := []*message.Message{{ID: 3, ConversationID: 9, Role: message.RoleUser, Content: "question"}}
+	messages := &fakeMessageService{calls: &calls, recent: history}
+	service := NewService(messages, nil, nil, nil, noDocumentRetriever{})
+	got, err := service.prepareModelMessages(context.Background(), 7, 3, history)
+	if err != nil || len(got) != 1 || got[0].Content != "question" {
+		t.Fatalf("prepareModelMessages() = %#v, %v", got, err)
+	}
+}
+
+func TestReceiveAndResponseFinishesModelCallWhenRAGPreparationFails(t *testing.T) {
+	calls := make([]string, 0)
+	history := []*message.Message{{ID: 2, ConversationID: 9, Role: message.RoleUser, Content: "question"}}
+	messages := &fakeMessageService{calls: &calls, recent: history}
+	model := &fakeLLMClient{calls: &calls, result: &llm.Result{Content: "must not run"}}
+	modelCalls := &fakeModelCallService{calls: &calls}
+	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
+	wantErr := errors.New("embedding unavailable")
+	service := NewService(messages, model, modelCalls, transactions, &fakeRetriever{err: wantErr})
+
+	result, err := service.ReceiveAndResponse(context.Background(), 7, 9, "question")
+	if !errors.Is(err, wantErr) || result != nil {
+		t.Fatalf("ReceiveAndResponse() = %#v, %v", result, err)
+	}
+	if modelCalls.finished == nil || modelCalls.finished.ErrorCode == nil || *modelCalls.finished.ErrorCode != "prepare_model_message_failed" {
+		t.Fatalf("finished model call = %#v", modelCalls.finished)
+	}
+	for _, call := range calls {
+		if call == "llm" {
+			t.Fatalf("model was called after RAG failure: %v", calls)
+		}
+	}
+}
+
+func TestBuildRAGContextSkipsBlankChunks(t *testing.T) {
+	got := buildRAGContext([]rag.Chunk{{Content: "  facts  "}, {Content: "   "}}, " question ")
+	for _, want := range []string{"[1]", "facts", "用户问题：\nquestion", "不要编造"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("buildRAGContext() = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "[2]") {
+		t.Fatalf("blank chunk was included: %q", got)
+	}
+}
+
 func (f *fakeMessageService) CreateUserMessage(
 	ctx context.Context,
 	userID, conversationID uint64,
@@ -40,11 +148,19 @@ func (f *fakeMessageService) CreateUserMessage(
 	f.conversationID = conversationID
 	f.userContent = content
 	if f.userErr == nil && f.userMessage == nil {
-		f.userMessage = &message.Message{
-			ID:             2,
-			ConversationID: conversationID,
-			Role:           message.RoleUser,
-			Content:        content,
+		for _, item := range f.recent {
+			if item != nil && item.ConversationID == conversationID && item.Role == message.RoleUser && item.Content == content {
+				f.userMessage = item
+				break
+			}
+		}
+		if f.userMessage == nil {
+			f.userMessage = &message.Message{
+				ID:             2,
+				ConversationID: conversationID,
+				Role:           message.RoleUser,
+				Content:        content,
+			}
 		}
 	}
 	return f.userMessage, f.userErr
@@ -73,6 +189,23 @@ func (f *fakeMessageService) ListRecent(
 	f.userID = userID
 	f.conversationID = conversationID
 	f.recentLimit = limit
+	for _, item := range f.recent {
+		if item != nil && item.ConversationID == 0 {
+			item.ConversationID = conversationID
+		}
+	}
+	if f.recentErr == nil && f.userMessage != nil {
+		found := false
+		for _, item := range f.recent {
+			if item != nil && item.ID == f.userMessage.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			f.recent = append(f.recent, f.userMessage)
+		}
+	}
 	return f.recent, f.recentErr
 }
 
@@ -236,7 +369,7 @@ func TestServiceReceiveAndResponse(t *testing.T) {
 	model := &fakeLLMClient{calls: &calls, result: modelResult}
 	modelCalls := &fakeModelCallService{calls: &calls}
 	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
-	service := NewService(messages, model, modelCalls, transactions)
+	service := NewService(messages, model, modelCalls, transactions, noDocumentRetriever{})
 	type contextKey string
 	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
 
@@ -293,7 +426,7 @@ func TestServiceRespondToMessageUsesExistingRequestMessage(t *testing.T) {
 	model := &fakeLLMClient{calls: &calls, result: modelResult}
 	modelCalls := &fakeModelCallService{calls: &calls}
 	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
-	service := NewService(messages, model, modelCalls, transactions)
+	service := NewService(messages, model, modelCalls, transactions, noDocumentRetriever{})
 
 	got, err := service.RespondToMessage(context.Background(), 7, 9, 2)
 	if err != nil {
@@ -350,7 +483,7 @@ func TestServiceReceiveAndResponseStopsAfterFailure(t *testing.T) {
 			model := &fakeLLMClient{calls: &calls, result: &llm.Result{Content: "answer"}, err: tt.modelErr}
 			modelCalls := &fakeModelCallService{calls: &calls}
 			transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
-			service := NewService(messages, model, modelCalls, transactions)
+			service := NewService(messages, model, modelCalls, transactions, noDocumentRetriever{})
 
 			got, err := service.ReceiveAndResponse(context.Background(), 7, 9, "question")
 			if !errors.Is(err, tt.wantErr) {
@@ -381,7 +514,7 @@ func TestServiceReceiveAndResponseFinishesWhenCompletionFails(t *testing.T) {
 	}
 	modelCalls := &fakeModelCallService{calls: &calls, completeErr: completeErr}
 	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
-	service := NewService(messages, model, modelCalls, transactions)
+	service := NewService(messages, model, modelCalls, transactions, noDocumentRetriever{})
 
 	got, err := service.ReceiveAndResponse(context.Background(), 7, 9, "question")
 	if !errors.Is(err, completeErr) {
@@ -429,7 +562,7 @@ func TestServiceChatStreaming(t *testing.T) {
 	}
 	modelCalls := &fakeModelCallService{calls: &calls}
 	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
-	service := NewService(messages, streaming, modelCalls, transactions)
+	service := NewService(messages, streaming, modelCalls, transactions, noDocumentRetriever{})
 	type contextKey string
 	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
 	var gotDeltas []string
@@ -511,7 +644,7 @@ func TestServiceChatStreamingStopsAfterFailure(t *testing.T) {
 			}
 			modelCalls := &fakeModelCallService{calls: &calls}
 			transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
-			service := NewService(messages, streaming, modelCalls, transactions)
+			service := NewService(messages, streaming, modelCalls, transactions, noDocumentRetriever{})
 			onDelta := tt.onDelta
 			if onDelta == nil {
 				onDelta = func(string) error { return nil }
@@ -545,7 +678,7 @@ func TestServiceChatStreamingMarksIncompleteResponse(t *testing.T) {
 	}
 	modelCalls := &fakeModelCallService{calls: &calls}
 	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
-	service := NewService(messages, streaming, modelCalls, transactions)
+	service := NewService(messages, streaming, modelCalls, transactions, noDocumentRetriever{})
 
 	got, err := service.ChatStreaming(context.Background(), 7, 9, "question", func(string) error { return nil })
 	if !errors.Is(err, llm.ErrResponseNotCompleted) {

@@ -31,6 +31,11 @@ type fakeMessageRepository struct {
 	recentLimit int
 	recent      []*Message
 	recentErr   error
+	gotByID     *Message
+	getByIDErr  error
+	getByIDUser uint64
+	getByIDConv uint64
+	getByIDID   uint64
 }
 
 func (f *fakeMessageRepository) Create(ctx context.Context, userID uint64, message *Message) error {
@@ -43,6 +48,43 @@ func (f *fakeMessageRepository) Create(ctx context.Context, userID uint64, messa
 		message.CreatedAt = time.Date(2026, time.August, 5, 12, 0, 0, 0, time.UTC)
 	}
 	return f.createErr
+}
+
+func (f *fakeMessageRepository) GetByID(_ context.Context, userID, conversationID, messageID uint64) (*Message, error) {
+	f.getByIDUser = userID
+	f.getByIDConv = conversationID
+	f.getByIDID = messageID
+	return f.gotByID, f.getByIDErr
+}
+
+func TestServiceGetByID(t *testing.T) {
+	want := &Message{ID: 9, ConversationID: 7, Role: RoleUser, Content: "question"}
+	repo := &fakeMessageRepository{gotByID: want}
+	service := NewService(repo)
+	got, err := service.GetByID(context.Background(), 5, 7, 9)
+	if err != nil || got != want {
+		t.Fatalf("GetByID() = %#v, %v", got, err)
+	}
+	if repo.getByIDUser != 5 || repo.getByIDConv != 7 || repo.getByIDID != 9 {
+		t.Fatalf("repository args = %d, %d, %d", repo.getByIDUser, repo.getByIDConv, repo.getByIDID)
+	}
+}
+
+func TestServiceGetByIDValidatesIDs(t *testing.T) {
+	service := NewService(&fakeMessageRepository{})
+	tests := []struct {
+		userID, conversationID, messageID uint64
+		want                              error
+	}{
+		{conversationID: 1, messageID: 1, want: conversation.ErrInvalidUserID},
+		{userID: 1, messageID: 1, want: ErrInvalidConversationID},
+		{userID: 1, conversationID: 1, want: ErrMessageNotFound},
+	}
+	for _, tt := range tests {
+		if _, err := service.GetByID(context.Background(), tt.userID, tt.conversationID, tt.messageID); !errors.Is(err, tt.want) {
+			t.Fatalf("GetByID(%d,%d,%d) error = %v, want %v", tt.userID, tt.conversationID, tt.messageID, err, tt.want)
+		}
+	}
 }
 
 func (f *fakeMessageRepository) ListByConversationID(

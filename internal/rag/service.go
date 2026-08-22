@@ -18,10 +18,10 @@ type Service struct {
 
 func NewService(documents DocumentStore, chunks ChunkRepository, embedder Embedder) (*Service, error) {
 	if documents == nil {
-		return nil, ErrInvalidDocuments
+		return nil, ErrInvalidDocumentStore
 	}
 	if chunks == nil {
-		return nil, ErrInvalidChunks
+		return nil, ErrInvalidChunkRepository
 	}
 	if embedder == nil {
 		return nil, ErrInvalidEmbedder

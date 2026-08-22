@@ -31,6 +31,19 @@ func (s *Service) CreateAssistantMessage(ctx context.Context, userID uint64,
 	return s.createMessage(ctx, userID, conversationID, content, RoleAssistant)
 }
 
+func (s *Service) GetByID(ctx context.Context, userID, conversationID, messageID uint64) (*Message, error) {
+	if userID == 0 {
+		return nil, conversation.ErrInvalidUserID
+	}
+	if conversationID == 0 {
+		return nil, ErrInvalidConversationID
+	}
+	if messageID == 0 {
+		return nil, ErrMessageNotFound
+	}
+	return s.messages.GetByID(ctx, userID, conversationID, messageID)
+}
+
 func (s *Service) List(ctx context.Context,
 	userID, conversationID uint64,
 	page, pageSize int) ([]*Message, error) {

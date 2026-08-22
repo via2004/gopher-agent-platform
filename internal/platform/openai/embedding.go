@@ -13,23 +13,57 @@ type Embedder struct {
 	model  string
 }
 
+type EmbeddingConfig struct {
+	APIKey       string
+	Model        string
+	BaseURL      string
+	RequiresAuth bool
+}
+
 func NewEmbedder(apiKey string, model string,
 	options ...option.RequestOption) (*Embedder, error) {
 	apiKey = strings.TrimSpace(apiKey)
+	model = strings.TrimSpace(model)
 	if apiKey == "" {
 		return nil, ErrMissingAPIKey
 	}
-	model = strings.TrimSpace(model)
 	if model == "" {
 		return nil, ErrMissingModel
 	}
 
-	requestOptions := []option.RequestOption{option.WithAPIKey(apiKey)}
+	return NewEmbedderWithConfig(EmbeddingConfig{
+		APIKey:       apiKey,
+		Model:        model,
+		RequiresAuth: true,
+	}, options...)
+}
+
+func NewEmbedderWithConfig(config EmbeddingConfig, options ...option.RequestOption) (*Embedder, error) {
+	config.APIKey = strings.TrimSpace(config.APIKey)
+	config.Model = strings.TrimSpace(config.Model)
+	config.BaseURL = strings.TrimSpace(config.BaseURL)
+	if config.Model == "" {
+		return nil, ErrMissingModel
+	}
+	if config.RequiresAuth && config.APIKey == "" {
+		return nil, ErrMissingAPIKey
+	}
+
+	requestOptions := make([]option.RequestOption, 0, len(options)+2)
+
+	if config.APIKey != "" {
+		requestOptions = append(requestOptions, option.WithAPIKey(config.APIKey))
+	}
+
+	if config.BaseURL != "" {
+		requestOptions = append(requestOptions, option.WithBaseURL(config.BaseURL))
+	}
+
 	requestOptions = append(requestOptions, options...)
 
 	return &Embedder{
 		client: openaisdk.NewEmbeddingService(requestOptions...),
-		model:  model,
+		model:  config.Model,
 	}, nil
 }
 

@@ -308,6 +308,7 @@ func TestNewRouterRegistersChatJobRoutes(t *testing.T) {
 		nil,
 		NewChatJobHandler(service),
 		nil,
+		nil,
 		verifier,
 		&fakeChatRateLimiter{allowed: true},
 	)

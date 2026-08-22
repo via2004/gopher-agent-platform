@@ -8,6 +8,13 @@ WHERE user_id = $1 AND id = $2
 RETURNING id, created_at
 `
 
+const GetMessageByIDAndConversationIDAndUserID = `
+SELECT m.id, m.conversation_id, m.role, m.content, m.created_at
+FROM messages AS m
+JOIN conversations AS c ON c.id = m.conversation_id
+WHERE m.id = $1 AND c.id = $2 AND c.user_id = $3
+`
+
 const QueryMessagesByConversationIDAndUserID = `
 SELECT m.id, m.conversation_id, m.role, m.content, m.created_at
 FROM messages AS m

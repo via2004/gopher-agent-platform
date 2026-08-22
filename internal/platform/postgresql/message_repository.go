@@ -34,6 +34,22 @@ func (r *MessageRepository) Create(ctx context.Context,
 	}
 }
 
+func (r *MessageRepository) GetByID(ctx context.Context, userID, conversationID, messageID uint64) (*message.Message, error) {
+	item := &message.Message{}
+	err := r.pool.QueryRow(ctx, GetMessageByIDAndConversationIDAndUserID,
+		messageID, conversationID, userID).Scan(
+		&item.ID, &item.ConversationID, &item.Role,
+		&item.Content, &item.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, message.ErrMessageNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query message by id: %w", err)
+	}
+	return item, nil
+}
+
 func (r *MessageRepository) ListByConversationID(ctx context.Context,
 	userID uint64, conversationID uint64, limit, offset int) ([]*message.Message, error) {
 	if err := r.checkConversationExistence(ctx, userID, conversationID); err != nil {
