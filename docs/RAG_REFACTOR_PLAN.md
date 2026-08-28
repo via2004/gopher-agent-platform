@@ -33,7 +33,19 @@ Chat / SSE / ChatJob
 
 ## 阶段 0：RAG 基线验收
 
-状态：`pending`
+状态：`blocked_external`
+
+验收记录（2026-08-28）：
+
+- PostgreSQL、Valkey、RabbitMQ、HTTP 服务均成功启动。
+- `/healthz` 与 `/readyz` 返回 200。
+- 专用用户注册和登录成功。
+- RAG 上传到 Embedding 阶段后返回 500。
+- 当前 `OPENAI_BASE_URL` 的根路径不是 OpenAI API 路径；直接请求会返回前端 HTML。
+- 改用 `/v1/embeddings` 后，Provider 明确返回 `text-embedding-3-small` 不受支持。
+- Provider 的 `/v1/models` 列表中没有任何 embedding 模型。
+- 继续真实验收需要配置支持 Embeddings API 的 BaseURL、API Key 和模型。
+- 本轮专用测试用户、Redis key、临时文档和测试进程均已清理。
 
 目的：先确认当前代码的真实行为，避免在未验证的链路上重构。
 
@@ -282,7 +294,16 @@ errors.Join
 
 ## 阶段 6：最终验收与下一步决策
 
-状态：`pending`
+状态：`blocked_external`
+
+已完成验证（2026-08-28）：
+
+- `go test ./...` 通过。
+- `go vet ./...` 通过。
+- PostgreSQL integration 测试使用当前数据库实际执行通过。
+- Valkey 的 RAG version/TTL/并发激活/限流隔离 integration 测试实际执行通过。
+- 服务启动、健康检查、就绪检查、注册和登录通过。
+- RAG 上传、普通 Chat、SSE 和 ChatJob 的真实模型验收等待 embedding-capable Provider 配置。
 
 任务：
 
