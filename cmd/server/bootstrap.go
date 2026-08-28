@@ -1,0 +1,295 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
+	redisclient "github.com/redis/go-redis/v9"
+
+	"gopherai/internal/chat"
+	"gopherai/internal/chatjob"
+	"gopherai/internal/httpapi"
+	"gopherai/internal/image"
+	"gopherai/internal/llm"
+	"gopherai/internal/message"
+	"gopherai/internal/modelcall"
+	filesystem "gopherai/internal/platform/filesystem"
+	onnxplatform "gopherai/internal/platform/onnx"
+	openaiplatform "gopherai/internal/platform/openai"
+	platform "gopherai/internal/platform/postgresql"
+	rabbitmqplatform "gopherai/internal/platform/rabbitmq"
+	redisplatform "gopherai/internal/platform/redis"
+	"gopherai/internal/rag"
+)
+
+const dependencyPingTimeout = 5 * time.Second
+
+type imageFeature struct {
+	handler    *httpapi.ImageHandler
+	classifier *onnxplatform.Classifier
+}
+
+func buildImageFeature() (*imageFeature, error) {
+	classifier, err := onnxplatform.NewClassifier(onnxplatform.Config{
+		SharedLibraryPath: os.Getenv("ONNXRUNTIME_SHARED_LIBRARY_PATH"),
+		ModelPath:         os.Getenv("IMAGE_MODEL_PATH"),
+		LabelsPath:        os.Getenv("IMAGE_LABELS_PATH"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize image classifier: %w", err)
+	}
+	service := image.NewService(classifier)
+	return &imageFeature{
+		handler:    httpapi.NewImageHandler(service),
+		classifier: classifier,
+	}, nil
+}
+
+func (f *imageFeature) Close() error {
+	return f.classifier.Close()
+}
+
+type ragFeature struct {
+	service       *rag.Service
+	handler       *httpapi.RAGHandler
+	uploadLimiter *redisplatform.RateLimiter
+}
+
+type chatFeature struct {
+	messageHandler *httpapi.MessageHandler
+	chatHandler    *httpapi.ChatHandler
+	jobHandler     *httpapi.ChatJobHandler
+
+	jobService *chatjob.Service
+	rabbitMQ   *rabbitmqplatform.RabbitMQClient
+}
+
+func buildChatFeature(
+	pool *pgxpool.Pool,
+	model llm.ModelClient,
+	retriever chat.Retriever,
+	maxAttempts int64,
+	rabbitMQURL string,
+) (*chatFeature, error) {
+	rabbitMQ, err := rabbitmqplatform.NewRabbitMQClient(rabbitMQURL)
+	if err != nil {
+		return nil, fmt.Errorf("new RabbitMQ client: %w", err)
+	}
+
+	messageService := message.NewService(platform.NewMessageRepository(pool))
+	modelCallService := modelcall.NewService(platform.NewModelRepository(pool))
+	unitOfWork := platform.NewChatUnitOfWork(platform.NewTxManager(pool))
+	chatService := chat.NewService(messageService, model, modelCallService, unitOfWork, retriever)
+	jobService := chatjob.NewService(
+		platform.NewChatJobsRepository(pool),
+		rabbitMQ,
+		chatService,
+		maxAttempts,
+	)
+
+	return &chatFeature{
+		messageHandler: httpapi.NewMessageHandler(messageService),
+		chatHandler:    httpapi.NewChatHandler(chatService),
+		jobHandler:     httpapi.NewChatJobHandler(jobService),
+		jobService:     jobService,
+		rabbitMQ:       rabbitMQ,
+	}, nil
+}
+
+func (f *chatFeature) StartConsumer(ctx context.Context) <-chan error {
+	errorsChannel := make(chan error, 1)
+	go func() {
+		log.Printf("rabbitmq consumer started")
+		errorsChannel <- f.rabbitMQ.ConsumeChatJobs(ctx, func(ctx context.Context, jobID uint64) error {
+			jobCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			return f.jobService.Process(jobCtx, jobID)
+		})
+	}()
+	return errorsChannel
+}
+
+func (f *chatFeature) Close() error {
+	return f.rabbitMQ.Close()
+}
+
+func buildRAGFeature(client *redisclient.Client) (*ragFeature, error) {
+	documentStore, err := filesystem.NewRagStore(os.Getenv("RAG_STORAGE_ROOT"))
+	if err != nil {
+		return nil, fmt.Errorf("new RAG document store: %w", err)
+	}
+	chunkRepository, err := redisplatform.NewRAGChunkRepository(client)
+	if err != nil {
+		return nil, fmt.Errorf("new RAG chunk repository: %w", err)
+	}
+	embedder, err := buildEmbedder()
+	if err != nil {
+		return nil, err
+	}
+	service, err := rag.NewService(documentStore, chunkRepository, embedder)
+	if err != nil {
+		return nil, fmt.Errorf("new RAG service: %w", err)
+	}
+	uploadLimiter, err := buildRateLimiter(
+		client,
+		"RAG_UPLOAD_RATE_LIMIT",
+		"RAG_UPLOAD_RATE_WINDOW_SECONDS",
+		redisplatform.NewRAGUploadRateLimiter,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &ragFeature{
+		service:       service,
+		handler:       httpapi.NewRAGHandler(service),
+		uploadLimiter: uploadLimiter,
+	}, nil
+}
+
+type rateLimiterFactory func(*redisclient.Client, int64, time.Duration) (*redisplatform.RateLimiter, error)
+
+func buildRateLimiter(client *redisclient.Client, limitEnv, windowEnv string, factory rateLimiterFactory) (*redisplatform.RateLimiter, error) {
+	limit, err := positiveEnvInt64(limitEnv)
+	if err != nil {
+		return nil, err
+	}
+	windowSeconds, err := positiveEnvInt64(windowEnv)
+	if err != nil {
+		return nil, err
+	}
+	limiter, err := factory(client, limit, time.Duration(windowSeconds)*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("new rate limiter for %s: %w", limitEnv, err)
+	}
+	return limiter, nil
+}
+
+func positiveEnvInt64(name string) (int64, error) {
+	value, err := strconv.ParseInt(strings.TrimSpace(os.Getenv(name)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", name, err)
+	}
+	if value <= 0 {
+		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	return value, nil
+}
+
+func connectPostgreSQL(databaseURL string) (*pgxpool.Pool, error) {
+	if strings.TrimSpace(databaseURL) == "" {
+		return nil, errors.New("DATABASE_URL is empty")
+	}
+	pool, err := pgxpool.New(context.Background(), databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("new PostgreSQL pool: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), dependencyPingTimeout)
+	defer cancel()
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping PostgreSQL: %w", err)
+	}
+	return pool, nil
+}
+
+func connectRedis(redisURL string) (*redisclient.Client, error) {
+	options, err := redisclient.ParseURL(strings.TrimSpace(redisURL))
+	if err != nil {
+		return nil, fmt.Errorf("parse REDIS_URL: %w", err)
+	}
+	client := redisclient.NewClient(options)
+	ctx, cancel := context.WithTimeout(context.Background(), dependencyPingTimeout)
+	defer cancel()
+	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("ping Redis: %w", err)
+	}
+	return client, nil
+}
+
+func buildLLMClient() (llm.ModelClient, error) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	model := os.Getenv("OPENAI_MODEL")
+	baseURL := os.Getenv("OPENAI_BASE_URL")
+	wireAPI := envOrDefault("OPENAI_WIRE_API", "responses")
+	requiresAuth, err := envBool("OPENAI_REQUIRES_AUTH", true)
+	if err != nil {
+		return nil, err
+	}
+	disableStorage, err := envBool("OPENAI_DISABLE_RESPONSE_STORAGE", true)
+	if err != nil {
+		return nil, err
+	}
+	reasoningEffort := envOrDefault("OPENAI_REASONING_EFFORT", "low")
+	if apiKey == "" && model == "" && baseURL == "" {
+		return llm.UnavailableClient{}, nil
+	}
+
+	client, err := openaiplatform.NewClientWithConfig(openaiplatform.Config{
+		APIKey:                 apiKey,
+		Model:                  model,
+		BaseURL:                baseURL,
+		WireAPI:                wireAPI,
+		RequiresAuth:           requiresAuth,
+		ReasoningEffort:        reasoningEffort,
+		DisableResponseStorage: disableStorage,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("new OpenAI client: %w", err)
+	}
+	return client, nil
+}
+
+func buildEmbedder() (rag.Embedder, error) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	model := os.Getenv("OPENAI_EMBEDDING_MODEL")
+	baseURL := os.Getenv("OPENAI_BASE_URL")
+	requiresAuth, err := envBool("OPENAI_REQUIRES_AUTH", true)
+	if err != nil {
+		return nil, err
+	}
+	embedder, err := openaiplatform.NewEmbedderWithConfig(openaiplatform.EmbeddingConfig{
+		APIKey:       apiKey,
+		Model:        model,
+		BaseURL:      baseURL,
+		RequiresAuth: requiresAuth,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("new OpenAI embedder: %w", err)
+	}
+	return embedder, nil
+}
+
+func loadEnvironment() error {
+	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load .env: %w", err)
+	}
+	return nil
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envBool(name string, fallback bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("parse %s: %w", name, err)
+	}
+	return parsed, nil
+}

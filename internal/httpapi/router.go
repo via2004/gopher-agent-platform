@@ -6,18 +6,28 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// RouterHandlers 汇总 HTTP Router 直接注册的业务 Handler。
+type RouterHandlers struct {
+	Users         *UserHandler
+	Conversations *ConversationHandler
+	Messages      *MessageHandler
+	Chat          *ChatHandler
+	Health        *HealthHandler
+	ChatJobs      *ChatJobHandler
+	Images        *ImageHandler
+	RAG           *RAGHandler
+}
+
+// RouterMiddleware 汇总 Router 使用的认证与业务限流依赖。
+type RouterMiddleware struct {
+	Tokens           TokenVerifier
+	ChatLimiter      RateLimiter
+	RAGUploadLimiter RateLimiter
+}
+
 func NewRouter(
-	userHandler *UserHandler,
-	conversationHandler *ConversationHandler,
-	messageHandler *MessageHandler,
-	chatHandler *ChatHandler,
-	checker *HealthHandler,
-	chatjobHandler *ChatJobHandler,
-	imageHandler *ImageHandler,
-	ragHandler *RAGHandler,
-	tokens TokenVerifier,
-	chatLimiter RateLimiter,
-	ragUploadLimiter RateLimiter,
+	handlers RouterHandlers,
+	middleware RouterMiddleware,
 ) *gin.Engine {
 	router := gin.New()
 
@@ -25,35 +35,43 @@ func NewRouter(
 	router.Use(LogMiddleware())
 	router.Use(gin.Recovery())
 
+	registerPublicRoutes(router, handlers)
+
+	authenticated := router.Group("/api/v1")
+	authenticated.Use(AuthMiddleware(middleware.Tokens))
+	registerAuthenticatedRoutes(authenticated, handlers, middleware)
+	return router
+}
+
+func registerPublicRoutes(router *gin.Engine, handlers RouterHandlers) {
 	router.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "pong",
 		})
 	})
-	router.GET("/readyz", checker.Ready)
-	router.POST("/api/v1/auth/register", userHandler.Register)
-	router.POST("/api/v1/auth/login", userHandler.Login)
+	router.GET("/readyz", handlers.Health.Ready)
+	router.POST("/api/v1/auth/register", handlers.Users.Register)
+	router.POST("/api/v1/auth/login", handlers.Users.Login)
+}
 
-	authenticated := router.Group("/api/v1")
-	authenticated.Use(AuthMiddleware(tokens))
-	authenticated.GET("/users/me", userHandler.Me)
-	authenticated.POST("/conversations", conversationHandler.Create)
-	authenticated.GET("/conversations", conversationHandler.List)
-	authenticated.GET("/conversations/:id", conversationHandler.GetByID)
-	authenticated.DELETE("/conversations/:id", conversationHandler.Delete)
+func registerAuthenticatedRoutes(group *gin.RouterGroup, handlers RouterHandlers, middleware RouterMiddleware) {
+	group.GET("/users/me", handlers.Users.Me)
+	group.POST("/conversations", handlers.Conversations.Create)
+	group.GET("/conversations", handlers.Conversations.List)
+	group.GET("/conversations/:id", handlers.Conversations.GetByID)
+	group.DELETE("/conversations/:id", handlers.Conversations.Delete)
 
-	authenticated.GET("/conversations/:id/messages", messageHandler.List)
-	authenticated.POST("/conversations/:id/messages", messageHandler.CreateUserMessage)
+	group.GET("/conversations/:id/messages", handlers.Messages.List)
+	group.POST("/conversations/:id/messages", handlers.Messages.CreateUserMessage)
 
-	chatRateLimit := RateLimitMiddleware(chatLimiter)
-	ragUploadRateLimit := RateLimitMiddleware(ragUploadLimiter)
+	chatRateLimit := RateLimitMiddleware(middleware.ChatLimiter)
+	ragUploadRateLimit := RateLimitMiddleware(middleware.RAGUploadLimiter)
 
-	authenticated.POST("/conversations/:id/chat", chatRateLimit, chatHandler.Chat)
-	authenticated.POST("/conversations/:id/chat/stream", chatRateLimit, chatHandler.ChatStreaming)
-	authenticated.POST("/conversations/:id/chat-jobs", chatRateLimit, chatjobHandler.Create)
-	authenticated.GET("/chat-jobs/:id", chatjobHandler.Get)
+	group.POST("/conversations/:id/chat", chatRateLimit, handlers.Chat.Chat)
+	group.POST("/conversations/:id/chat/stream", chatRateLimit, handlers.Chat.ChatStreaming)
+	group.POST("/conversations/:id/chat-jobs", chatRateLimit, handlers.ChatJobs.Create)
+	group.GET("/chat-jobs/:id", handlers.ChatJobs.Get)
 
-	authenticated.POST("/images/recognitions", imageHandler.Recognize)
-	authenticated.POST("/rag/documents", ragUploadRateLimit, ragHandler.Upload)
-	return router
+	group.POST("/images/recognitions", handlers.Images.Recognize)
+	group.POST("/rag/documents", ragUploadRateLimit, handlers.RAG.Upload)
 }

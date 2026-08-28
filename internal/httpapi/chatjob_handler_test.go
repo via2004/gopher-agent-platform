@@ -300,18 +300,7 @@ func TestNewRouterRegistersChatJobRoutes(t *testing.T) {
 		got:     &chatjob.Job{ID: 41, Status: chatjob.StatusPending, CreatedAt: createdAt},
 	}
 	verifier := &fakeTokenVerifier{userID: 7}
-	router := NewRouter(
-		NewUserHandler(&fakeUserRegistrar{}, nil),
-		nil,
-		nil,
-		nil,
-		nil,
-		NewChatJobHandler(service),
-		nil,
-		nil,
-		verifier,
-		&fakeRateLimiter{allowed: true}, nil,
-	)
+	router := NewRouter(RouterHandlers{Users: NewUserHandler(&fakeUserRegistrar{}, nil), ChatJobs: NewChatJobHandler(service)}, RouterMiddleware{Tokens: verifier, ChatLimiter: &fakeRateLimiter{allowed: true}})
 
 	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/chat-jobs",
 		strings.NewReader(`{"content":"question"}`))

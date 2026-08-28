@@ -197,16 +197,34 @@ Chat 限流行为不变。
 
 ## 阶段 4：收敛 main 组装
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 新增 `cmd/server/bootstrap.go`，集中放置特性组装和基础设施连接 helper。
+- `buildImageFeature` 管理 ONNX 配置、Image Service/Handler 和关闭资源。
+- `buildRAGFeature` 组装 FileStore、Redis chunks、Embedder、RAG Service/Handler 和上传限流器。
+- `buildChatFeature` 组装 Message、model_calls、UnitOfWork、Chat、ChatJob 和 RabbitMQ Client。
+- Chat Feature 暴露 Message/Chat/ChatJob Handler，并统一管理 Consumer 启动与 RabbitMQ 关闭。
+- `buildRateLimiter` 统一解析正整数 limit/window 配置。
+- `connectPostgreSQL`、`connectRedis` 统一创建连接、启动探活和失败清理。
+- `startChatJobConsumer` 封装 Consumer goroutine 与单 Job 超时。
+- 简单的用户、会话、消息组装继续保留在 `run()`，没有引入依赖注入容器。
+- 所有配置和依赖构造完成后才启动 RabbitMQ Consumer。
+- Router 使用 `RouterHandlers` 和 `RouterMiddleware` 两个命名结构替代位置参数列表。
+- Router 注册拆分为公开路由和鉴权路由两个私有函数。
 
 目的：降低 `run()` 的阅读负担，不改变依赖关系和启动行为。
 
-只抽取以下构造函数：
+实际抽取以下构造函数：
 
 ```go
-buildImageClassifier()
-buildRAGService(redisClient)
-buildChatRuntime(...)
+buildImageFeature()
+buildRAGFeature(redisClient)
+buildRateLimiter(...)
+connectPostgreSQL(...)
+connectRedis(...)
+startChatJobConsumer(...)
 ```
 
 约束：

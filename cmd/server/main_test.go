@@ -132,6 +132,32 @@ func TestBuildLLMClientRejectsInvalidBooleanValues(t *testing.T) {
 	}
 }
 
+func TestPositiveEnvInt64(t *testing.T) {
+	t.Setenv("TEST_POSITIVE_INT", " 42 ")
+	value, err := positiveEnvInt64("TEST_POSITIVE_INT")
+	if err != nil || value != 42 {
+		t.Fatalf("positiveEnvInt64() = %d, %v, want 42", value, err)
+	}
+
+	for _, value := range []string{"", "invalid", "0", "-1"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("TEST_POSITIVE_INT", value)
+			if _, err := positiveEnvInt64("TEST_POSITIVE_INT"); err == nil || !strings.Contains(err.Error(), "TEST_POSITIVE_INT") {
+				t.Fatalf("positiveEnvInt64(%q) error = %v", value, err)
+			}
+		})
+	}
+}
+
+func TestConnectorsRejectMissingURLs(t *testing.T) {
+	if _, err := connectPostgreSQL(""); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("connectPostgreSQL() error = %v", err)
+	}
+	if _, err := connectRedis(""); err == nil || !strings.Contains(err.Error(), "REDIS_URL") {
+		t.Fatalf("connectRedis() error = %v", err)
+	}
+}
+
 func clearLLMEnvironment(t *testing.T) {
 	t.Helper()
 	for _, name := range llmEnvironmentNames {
