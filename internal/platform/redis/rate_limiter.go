@@ -8,9 +8,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const defaultRateLimiterPrefix = "gopherai:rate_limit:chat:user"
+const (
+	defaultRateLimiterPrefix   = "gopherai:rate_limit:chat:user"
+	defaultRAGUploadRatePrefix = "gopherai:rate_limit:rag_upload:user"
+)
 
-// that's a lua script
 var allowScript = redis.NewScript(`
 	local current = redis.call("INCR", KEYS[1])
 
@@ -30,6 +32,15 @@ type RateLimiter struct {
 }
 
 func NewRateLimiter(client *redis.Client, limit int64, window time.Duration) (*RateLimiter, error) {
+	return newRateLimiter(client, limit, window, defaultRateLimiterPrefix)
+}
+
+// NewRAGUploadRateLimiter 创建使用独立 key prefix 的 RAG 上传限流器。
+func NewRAGUploadRateLimiter(client *redis.Client, limit int64, window time.Duration) (*RateLimiter, error) {
+	return newRateLimiter(client, limit, window, defaultRAGUploadRatePrefix)
+}
+
+func newRateLimiter(client *redis.Client, limit int64, window time.Duration, prefix string) (*RateLimiter, error) {
 	if client == nil {
 		return nil, ErrClientInvalid
 	}
@@ -43,7 +54,7 @@ func NewRateLimiter(client *redis.Client, limit int64, window time.Duration) (*R
 		client: client,
 		limit:  limit,
 		window: window,
-		prefix: defaultRateLimiterPrefix,
+		prefix: prefix,
 	}, nil
 }
 

@@ -153,7 +153,16 @@ Filesystem:
 
 ## 阶段 3：RAG 上传限流
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- Chat 与 RAG 上传复用同一个固定窗口 Lua 限流算法。
+- RAG 上传使用独立 prefix：`gopherai:rate_limit:rag_upload:user`。
+- 增加独立的 limit/window 环境配置和本地开发配置。
+- `/rag/documents` 在 Handler 前执行独立限流 middleware。
+- 超限继续复用 429 与 `Retry-After`，Redis 错误返回 503。
+- 已验证同一用户的 Chat 与 RAG 上传计数互不影响，路由不会误用 Chat limiter。
 
 问题：上传会产生 Embedding 成本，但当前只鉴权，没有频率限制。
 

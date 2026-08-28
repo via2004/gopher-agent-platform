@@ -310,7 +310,7 @@ func TestNewRouterRegistersChatJobRoutes(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		&fakeChatRateLimiter{allowed: true},
+		&fakeRateLimiter{allowed: true}, nil,
 	)
 
 	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/chat-jobs",

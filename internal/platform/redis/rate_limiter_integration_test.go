@@ -74,6 +74,44 @@ func TestRateLimiterSeparatesUsers(t *testing.T) {
 	}
 }
 
+func TestChatAndRAGUploadRateLimitersUseIndependentKeys(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	err := client.Ping(ctx).Err()
+	cancel()
+	if err != nil {
+		_ = client.Close()
+		t.Skipf("Redis/Valkey is unavailable: %v", err)
+	}
+	keys := []string{defaultRateLimiterPrefix + ":42", defaultRAGUploadRatePrefix + ":42"}
+	_ = client.Del(context.Background(), keys...).Err()
+	t.Cleanup(func() {
+		_ = client.Del(context.Background(), keys...).Err()
+		_ = client.Close()
+	})
+
+	chatLimiter, err := NewRateLimiter(client, 1, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ragLimiter, err := NewRAGUploadRateLimiter(client, 1, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed, _, err := chatLimiter.Allow(context.Background(), 42); err != nil || !allowed {
+		t.Fatalf("chat Allow() = %v, %v", allowed, err)
+	}
+	if allowed, _, err := ragLimiter.Allow(context.Background(), 42); err != nil || !allowed {
+		t.Fatalf("RAG Allow() = %v, %v; chat count must not consume RAG quota", allowed, err)
+	}
+	if allowed, _, err := chatLimiter.Allow(context.Background(), 42); err != nil || allowed {
+		t.Fatalf("second chat Allow() = %v, %v, want denied", allowed, err)
+	}
+	if allowed, _, err := ragLimiter.Allow(context.Background(), 42); err != nil || allowed {
+		t.Fatalf("second RAG Allow() = %v, %v, want denied", allowed, err)
+	}
+}
+
 func TestRateLimiterWindowExpires(t *testing.T) {
 	limiter, _, _ := newIntegrationRateLimiter(t, 1, 100*time.Millisecond)
 	ctx := context.Background()

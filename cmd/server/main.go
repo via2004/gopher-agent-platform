@@ -149,6 +149,24 @@ func run() error {
 		return errors.New("CHAT_RATE_WINDOW_SECONDS must be positive")
 	}
 
+	ragUploadLimitString := os.Getenv("RAG_UPLOAD_RATE_LIMIT")
+	ragUploadLimit, err := strconv.ParseInt(ragUploadLimitString, 10, 64)
+	if err != nil {
+		return fmt.Errorf("parse RAG_UPLOAD_RATE_LIMIT: %w", err)
+	}
+	if ragUploadLimit <= 0 {
+		return errors.New("RAG_UPLOAD_RATE_LIMIT must be positive")
+	}
+
+	ragUploadWindowString := os.Getenv("RAG_UPLOAD_RATE_WINDOW_SECONDS")
+	ragUploadWindow, err := strconv.ParseInt(ragUploadWindowString, 10, 64)
+	if err != nil {
+		return fmt.Errorf("parse RAG_UPLOAD_RATE_WINDOW_SECONDS: %w", err)
+	}
+	if ragUploadWindow <= 0 {
+		return errors.New("RAG_UPLOAD_RATE_WINDOW_SECONDS must be positive")
+	}
+
 	redisURLString := os.Getenv("REDIS_URL")
 	options, err := redis.ParseURL(redisURLString)
 	if err != nil {
@@ -224,6 +242,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	ragUploadRateLimiter, err := redis_.NewRAGUploadRateLimiter(
+		client,
+		ragUploadLimit,
+		time.Duration(ragUploadWindow)*time.Second,
+	)
+	if err != nil {
+		return err
+	}
 
 	readinessChecker := health.NewChecker(pool.Ping, func(ctx context.Context) error {
 		return client.Ping(ctx).Err()
@@ -232,7 +258,8 @@ func run() error {
 	checker := httpapi.NewHealthHandler(readinessChecker)
 
 	router := httpapi.NewRouter(userHandler, conversationHandler, messageHandler, chatHandler,
-		checker, chatJobHandler, imageHandler, ragHandler, tokenManager, chatRateLimiter)
+		checker, chatJobHandler, imageHandler, ragHandler, tokenManager,
+		chatRateLimiter, ragUploadRateLimiter)
 
 	server := &http.Server{
 		Addr:           IPAddr + Port,

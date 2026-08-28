@@ -12,11 +12,12 @@ import (
 	"gopherai/internal/chat"
 	"gopherai/internal/conversation"
 	"gopherai/internal/message"
+	"gopherai/internal/rag"
 	"gopherai/internal/user"
 )
 
 func TestNewRouterHealthz(t *testing.T) {
-	router := NewRouter(NewUserHandler(&fakeUserRegistrar{}, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	router := NewRouter(NewUserHandler(&fakeUserRegistrar{}, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
@@ -46,7 +47,7 @@ func TestNewRouterReadinessRouteDoesNotRequireAuthentication(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		nil,
+		nil, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
@@ -68,7 +69,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 		Email:     "user@example.com",
 		CreatedAt: createdAt,
 	}}
-	router := NewRouter(NewUserHandler(registrar, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	router := NewRouter(NewUserHandler(registrar, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),
@@ -88,7 +89,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 func TestNewRouterProtectsCurrentUserRoute(t *testing.T) {
 	users := &fakeUserRegistrar{}
 	verifier := &fakeTokenVerifier{}
-	router := NewRouter(NewUserHandler(users, nil), nil, nil, nil, nil, nil, nil, nil, verifier, nil)
+	router := NewRouter(NewUserHandler(users, nil), nil, nil, nil, nil, nil, nil, nil, verifier, nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
 
@@ -106,7 +107,7 @@ func TestNewRouterProtectsCurrentUserRoute(t *testing.T) {
 func TestNewRouterServesCurrentUserForValidToken(t *testing.T) {
 	users := &fakeUserRegistrar{queriedUser: &user.User{ID: 42, Email: "user@example.com"}}
 	verifier := &fakeTokenVerifier{userID: 42}
-	router := NewRouter(NewUserHandler(users, nil), nil, nil, nil, nil, nil, nil, nil, verifier, nil)
+	router := NewRouter(NewUserHandler(users, nil), nil, nil, nil, nil, nil, nil, nil, verifier, nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
 	req.Header.Set("Authorization", "Bearer access-token")
@@ -133,7 +134,7 @@ func TestNewRouterProtectsCreateConversationRoute(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		nil,
+		nil, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations",
@@ -166,7 +167,7 @@ func TestNewRouterCreatesConversationForAuthenticatedUser(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		nil,
+		nil, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations",
@@ -197,7 +198,7 @@ func TestNewRouterProtectsConversationListRoute(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		nil,
+		nil, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations", nil)
@@ -219,7 +220,7 @@ func TestNewRouterListsConversationsForAuthenticatedUser(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		nil,
+		nil, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations?page=2&page_size=10", nil)
@@ -247,7 +248,7 @@ func TestNewRouterProtectsConversationDetailRoute(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		nil,
+		nil, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations/42", nil)
@@ -273,7 +274,7 @@ func TestNewRouterGetsConversationForAuthenticatedUser(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		nil,
+		nil, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations/42", nil)
@@ -301,7 +302,7 @@ func TestNewRouterProtectsConversationDeleteRoute(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		nil,
+		nil, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/conversations/42", nil)
@@ -323,7 +324,7 @@ func TestNewRouterDeletesConversationForAuthenticatedUser(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		nil,
+		nil, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/conversations/42", nil)
@@ -363,7 +364,7 @@ func TestNewRouterProtectsMessageRoutes(t *testing.T) {
 				nil,
 				nil,
 				verifier,
-				nil,
+				nil, nil,
 			)
 			recorder := httptest.NewRecorder()
 			req := httptest.NewRequest(tt.method, "/api/v1/conversations/9/messages", strings.NewReader(tt.body))
@@ -396,7 +397,7 @@ func TestNewRouterCreatesMessageForAuthenticatedUser(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		nil,
+		nil, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/messages", strings.NewReader(`{"content":"hello"}`))
@@ -426,7 +427,7 @@ func TestNewRouterListsMessagesForAuthenticatedUser(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		nil,
+		nil, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/conversations/9/messages?page=2&page_size=10", nil)
@@ -458,7 +459,7 @@ func TestNewRouterProtectsChatRoute(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		&fakeChatRateLimiter{allowed: true},
+		&fakeRateLimiter{allowed: true}, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/chat", strings.NewReader(`{"content":"hello"}`))
@@ -489,7 +490,7 @@ func TestNewRouterServesChatForAuthenticatedUser(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		&fakeChatRateLimiter{allowed: true},
+		&fakeRateLimiter{allowed: true}, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/chat", strings.NewReader(`{"content":"hello"}`))
@@ -528,7 +529,7 @@ func TestNewRouterServesStreamingChatForAuthenticatedUser(t *testing.T) {
 		nil,
 		nil,
 		verifier,
-		&fakeChatRateLimiter{allowed: true},
+		&fakeRateLimiter{allowed: true}, nil,
 	)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations/9/chat/stream", strings.NewReader(`{"content":"hello"}`))
@@ -567,7 +568,7 @@ func (panicUserRegistrar) GetByID(ctx context.Context, userID uint64) (*user.Use
 }
 
 func TestNewRouterRecoversFromHandlerPanic(t *testing.T) {
-	router := NewRouter(NewUserHandler(panicUserRegistrar{}, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	router := NewRouter(NewUserHandler(panicUserRegistrar{}, nil), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),
@@ -589,7 +590,7 @@ func TestNewRouterProtectsRAGDocumentRoute(t *testing.T) {
 		nil, nil, nil, nil, nil, nil,
 		NewRAGHandler(service),
 		verifier,
-		nil,
+		nil, nil,
 	)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/rag/documents", nil)
@@ -597,5 +598,34 @@ func TestNewRouterProtectsRAGDocumentRoute(t *testing.T) {
 	assertErrorResponse(t, recorder, http.StatusUnauthorized, "UNAUTHORIZED")
 	if service.calls != 0 {
 		t.Fatalf("Upload() calls = %d, want 0", service.calls)
+	}
+}
+
+func TestNewRouterUsesDedicatedRAGUploadLimiter(t *testing.T) {
+	service := &fakeRAGService{result: &rag.Document{Filename: "notes.md", Size: 5}}
+	verifier := &fakeTokenVerifier{userID: 42}
+	chatLimiter := &fakeRateLimiter{allowed: false}
+	ragLimiter := &fakeRateLimiter{allowed: true}
+	router := NewRouter(
+		NewUserHandler(&fakeUserRegistrar{}, nil),
+		nil, nil, nil, nil, nil, nil,
+		NewRAGHandler(service),
+		verifier,
+		chatLimiter,
+		ragLimiter,
+	)
+	request := ragDocumentRequest(t, "notes.md", []byte("hello"))
+	request.Header.Set("Authorization", "Bearer access-token")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if ragLimiter.calls != 1 || ragLimiter.userID != 42 {
+		t.Fatalf("RAG limiter = %d calls for user %d", ragLimiter.calls, ragLimiter.userID)
+	}
+	if chatLimiter.calls != 0 {
+		t.Fatalf("chat limiter calls = %d, want 0", chatLimiter.calls)
 	}
 }

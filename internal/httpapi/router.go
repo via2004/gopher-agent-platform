@@ -16,7 +16,8 @@ func NewRouter(
 	imageHandler *ImageHandler,
 	ragHandler *RAGHandler,
 	tokens TokenVerifier,
-	limiter ChatRateLimiter,
+	chatLimiter RateLimiter,
+	ragUploadLimiter RateLimiter,
 ) *gin.Engine {
 	router := gin.New()
 
@@ -44,7 +45,8 @@ func NewRouter(
 	authenticated.GET("/conversations/:id/messages", messageHandler.List)
 	authenticated.POST("/conversations/:id/messages", messageHandler.CreateUserMessage)
 
-	chatRateLimit := ChatRateLimitMiddleware(limiter)
+	chatRateLimit := RateLimitMiddleware(chatLimiter)
+	ragUploadRateLimit := RateLimitMiddleware(ragUploadLimiter)
 
 	authenticated.POST("/conversations/:id/chat", chatRateLimit, chatHandler.Chat)
 	authenticated.POST("/conversations/:id/chat/stream", chatRateLimit, chatHandler.ChatStreaming)
@@ -52,6 +54,6 @@ func NewRouter(
 	authenticated.GET("/chat-jobs/:id", chatjobHandler.Get)
 
 	authenticated.POST("/images/recognitions", imageHandler.Recognize)
-	authenticated.POST("/rag/documents", ragHandler.Upload)
+	authenticated.POST("/rag/documents", ragUploadRateLimit, ragHandler.Upload)
 	return router
 }

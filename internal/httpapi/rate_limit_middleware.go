@@ -16,7 +16,7 @@ allowed=false             返回 429
 retryAfter=35*time.Second 告诉客户端多久后重试
 err!=nil                  Redis 异常，返回 503
 */
-type ChatRateLimiter interface {
+type RateLimiter interface {
 	Allow(
 		ctx context.Context,
 		userID uint64,
@@ -27,7 +27,7 @@ type ChatRateLimiter interface {
 	)
 }
 
-func ChatRateLimitMiddleware(limiter ChatRateLimiter) gin.HandlerFunc {
+func RateLimitMiddleware(limiter RateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID, valid := checkUserIDValidity(c)
 		if !valid {

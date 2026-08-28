@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type fakeChatRateLimiter struct {
+type fakeRateLimiter struct {
 	allowed    bool
 	retryAfter time.Duration
 	err        error
@@ -20,15 +20,15 @@ type fakeChatRateLimiter struct {
 	ctx        context.Context
 }
 
-func (f *fakeChatRateLimiter) Allow(ctx context.Context, userID uint64) (bool, time.Duration, error) {
+func (f *fakeRateLimiter) Allow(ctx context.Context, userID uint64) (bool, time.Duration, error) {
 	f.calls++
 	f.userID = userID
 	f.ctx = ctx
 	return f.allowed, f.retryAfter, f.err
 }
 
-func TestChatRateLimitMiddlewareAllowsRequest(t *testing.T) {
-	limiter := &fakeChatRateLimiter{allowed: true}
+func TestRateLimitMiddlewareAllowsRequest(t *testing.T) {
+	limiter := &fakeRateLimiter{allowed: true}
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/chat", nil)
 	req = req.WithContext(context.WithValue(req.Context(), testContextKey{}, "request-value"))
@@ -37,7 +37,7 @@ func TestChatRateLimitMiddlewareAllowsRequest(t *testing.T) {
 		c.Set(userIDContextKey, uint64(42))
 		c.Next()
 	})
-	routerWithUserID.GET("/chat", ChatRateLimitMiddleware(limiter), func(c *gin.Context) {
+	routerWithUserID.GET("/chat", RateLimitMiddleware(limiter), func(c *gin.Context) {
 		c.Status(http.StatusNoContent)
 	})
 	routerWithUserID.ServeHTTP(recorder, req)
@@ -53,10 +53,10 @@ func TestChatRateLimitMiddlewareAllowsRequest(t *testing.T) {
 	}
 }
 
-func TestChatRateLimitMiddlewareRejectsUnauthenticatedRequest(t *testing.T) {
-	limiter := &fakeChatRateLimiter{allowed: true}
+func TestRateLimitMiddlewareRejectsUnauthenticatedRequest(t *testing.T) {
+	limiter := &fakeRateLimiter{allowed: true}
 	router := gin.New()
-	router.GET("/chat", ChatRateLimitMiddleware(limiter), func(c *gin.Context) {
+	router.GET("/chat", RateLimitMiddleware(limiter), func(c *gin.Context) {
 		t.Fatal("next handler was called")
 	})
 
@@ -69,14 +69,14 @@ func TestChatRateLimitMiddlewareRejectsUnauthenticatedRequest(t *testing.T) {
 	}
 }
 
-func TestChatRateLimitMiddlewareRejectsOverLimit(t *testing.T) {
-	limiter := &fakeChatRateLimiter{retryAfter: 1500 * time.Millisecond}
+func TestRateLimitMiddlewareRejectsOverLimit(t *testing.T) {
+	limiter := &fakeRateLimiter{retryAfter: 1500 * time.Millisecond}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Set(userIDContextKey, uint64(42))
 		c.Next()
 	})
-	router.GET("/chat", ChatRateLimitMiddleware(limiter), func(c *gin.Context) {
+	router.GET("/chat", RateLimitMiddleware(limiter), func(c *gin.Context) {
 		t.Fatal("next handler was called")
 	})
 
@@ -89,14 +89,14 @@ func TestChatRateLimitMiddlewareRejectsOverLimit(t *testing.T) {
 	}
 }
 
-func TestChatRateLimitMiddlewareReturnsServiceUnavailableOnLimiterError(t *testing.T) {
-	limiter := &fakeChatRateLimiter{allowed: true, err: errors.New("redis unavailable")}
+func TestRateLimitMiddlewareReturnsServiceUnavailableOnLimiterError(t *testing.T) {
+	limiter := &fakeRateLimiter{allowed: true, err: errors.New("redis unavailable")}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Set(userIDContextKey, uint64(42))
 		c.Next()
 	})
-	router.GET("/chat", ChatRateLimitMiddleware(limiter), func(c *gin.Context) {
+	router.GET("/chat", RateLimitMiddleware(limiter), func(c *gin.Context) {
 		t.Fatal("next handler was called")
 	})
 
