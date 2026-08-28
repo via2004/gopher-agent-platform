@@ -3,10 +3,13 @@ package openai
 import (
 	"context"
 	"fmt"
+	"strings"
+
 	openaisdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
-	"strings"
 )
+
+const maxEmbeddingBatchSize = 64
 
 type Embedder struct {
 	client openaisdk.EmbeddingService
@@ -68,10 +71,10 @@ func NewEmbedderWithConfig(config EmbeddingConfig, options ...option.RequestOpti
 }
 
 func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	result := make([][]float32, len(texts))
 	if len(texts) == 0 {
 		return nil, ErrEmptyEmbeddingInput
 	}
+
 	input := make([]string, len(texts))
 	for i := range texts {
 		input[i] = strings.TrimSpace(texts[i])
@@ -80,6 +83,29 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 		}
 	}
 
+	result := make([][]float32, len(input))
+	expectedDimension := 0
+	for start := 0; start < len(input); start += maxEmbeddingBatchSize {
+		end := min(start+maxEmbeddingBatchSize, len(input))
+		batch, err := e.embedBatch(ctx, input[start:end])
+		if err != nil {
+			return nil, err
+		}
+
+		for i, vector := range batch {
+			if expectedDimension == 0 {
+				expectedDimension = len(vector)
+			} else if len(vector) != expectedDimension {
+				return nil, ErrEmbeddingResponseInvalid
+			}
+			result[start+i] = vector
+		}
+	}
+
+	return result, nil
+}
+
+func (e *Embedder) embedBatch(ctx context.Context, input []string) ([][]float32, error) {
 	response, err := e.client.New(ctx, openaisdk.EmbeddingNewParams{
 		Input: openaisdk.EmbeddingNewParamsInputUnion{
 			OfArrayOfStrings: input,
@@ -93,8 +119,9 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 	if len(input) != len(response.Data) {
 		return nil, ErrEmbeddingResponseInvalid
 	}
-	seen := make([]bool, len(input))
 
+	result := make([][]float32, len(input))
+	seen := make([]bool, len(input))
 	for _, data := range response.Data {
 		if data.Index < 0 || data.Index >= int64(len(input)) || seen[data.Index] {
 			return nil, ErrEmbeddingResponseInvalid
@@ -111,7 +138,7 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 		seen[data.Index] = true
 	}
 
-	// 不满足代表着Embedding 返回的向量维度不一致
+	// Every vector in one response must use the same embedding dimension.
 	for i := 1; i < len(result); i++ {
 		if len(result[i]) != len(result[i-1]) {
 			return nil, ErrEmbeddingResponseInvalid

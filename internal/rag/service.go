@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
 )
 
 const maxDocumentBytes = 5 << 20 // 5MB
@@ -49,6 +51,9 @@ func (s *Service) Upload(ctx context.Context, userID uint64,
 	if !utf8.Valid(content) {
 		return nil, ErrInvalidEncoding
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	ext := strings.ToLower(filepath.Ext(filename))
 	if ext != ".md" && ext != ".txt" {
@@ -78,15 +83,30 @@ func (s *Service) Upload(ctx context.Context, userID uint64,
 		chunks[i].Vector = embedding[i]
 	}
 
-	if err := s.chunks.Replace(ctx, userID, chunks); err != nil {
+	version := uuid.NewString()
+	if err := s.documents.Save(ctx, userID, version, filename, content); err != nil {
 		return nil, err
 	}
 
-	if err := s.documents.Save(ctx, userID, filename, content); err != nil {
+	if err := s.chunks.Replace(ctx, userID, version, chunks); err != nil {
+		_ = s.documents.Delete(context.WithoutCancel(ctx), userID, version)
 		return nil, err
+	}
+
+	previous, err := s.chunks.Activate(ctx, userID, version)
+	if err != nil {
+		// Activate may have committed in Redis even when the client did not
+		// receive its response. Keep the new version so current never points
+		// to deleted data; orphan cleanup is deliberately best effort later.
+		return nil, err
+	}
+	if previous != "" && previous != version {
+		cleanupCtx := context.WithoutCancel(ctx)
+		_ = s.documents.Delete(cleanupCtx, userID, previous)
 	}
 
 	return &Document{
+		Version:  version,
 		Filename: filename,
 		Size:     int64(len(content)),
 		Chunks:   chunks,
@@ -108,7 +128,15 @@ func (s *Service) Retrieve(ctx context.Context, userID uint64,
 		return nil, ErrInvalidTopK
 	}
 
-	chunks, err := s.chunks.List(ctx, userID)
+	version, err := s.chunks.CurrentVersion(ctx, userID)
+	if errors.Is(err, ErrChunksNotFound) {
+		return nil, ErrDocumentNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	chunks, err := s.chunks.List(ctx, userID, version)
 	if errors.Is(err, ErrChunksNotFound) {
 		return nil, ErrDocumentNotFound
 	}

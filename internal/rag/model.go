@@ -7,6 +7,7 @@ type Chunk struct {
 }
 
 type Document struct {
+	Version  string
 	Filename string
 	Size     int64
 	Chunks   []Chunk

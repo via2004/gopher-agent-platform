@@ -10,32 +10,60 @@ import (
 type fakeDocumentStore struct {
 	savedFilename string
 	savedContent  []byte
+	savedVersion  string
+	deleted       []string
 	err           error
 }
 
-func (f *fakeDocumentStore) Save(_ context.Context, _ uint64, filename string, content []byte) error {
+func (f *fakeDocumentStore) Save(_ context.Context, _ uint64, version, filename string, content []byte) error {
 	f.savedFilename = filename
+	f.savedVersion = version
 	f.savedContent = append([]byte(nil), content...)
 	return f.err
 }
-func (*fakeDocumentStore) Load(context.Context, uint64) ([]byte, string, error) { return nil, "", nil }
-func (*fakeDocumentStore) Delete(context.Context, uint64) error                 { return nil }
+func (*fakeDocumentStore) Load(context.Context, uint64, string) ([]byte, string, error) {
+	return nil, "", nil
+}
+func (f *fakeDocumentStore) Delete(_ context.Context, _ uint64, version string) error {
+	f.deleted = append(f.deleted, version)
+	return nil
+}
 
 type fakeChunkRepository struct {
-	stored  []Chunk
-	listed  []Chunk
-	listErr error
-	err     error
+	stored          []Chunk
+	listed          []Chunk
+	listErr         error
+	replaceErr      error
+	activateErr     error
+	currentVersion  string
+	previousVersion string
+	activated       []string
+	deleted         []string
 }
 
-func (f *fakeChunkRepository) Replace(_ context.Context, _ uint64, chunks []Chunk) error {
+func (f *fakeChunkRepository) Replace(_ context.Context, _ uint64, version string, chunks []Chunk) error {
 	f.stored = append([]Chunk(nil), chunks...)
-	return f.err
+	return f.replaceErr
 }
-func (f *fakeChunkRepository) List(context.Context, uint64) ([]Chunk, error) {
+func (f *fakeChunkRepository) List(context.Context, uint64, string) ([]Chunk, error) {
 	return f.listed, f.listErr
 }
-func (*fakeChunkRepository) Delete(context.Context, uint64) error { return nil }
+func (f *fakeChunkRepository) Delete(_ context.Context, _ uint64, version string) error {
+	f.deleted = append(f.deleted, version)
+	return nil
+}
+func (f *fakeChunkRepository) CurrentVersion(context.Context, uint64) (string, error) {
+	if f.currentVersion == "" {
+		return "test-version", nil
+	}
+	return f.currentVersion, nil
+}
+func (f *fakeChunkRepository) Activate(_ context.Context, _ uint64, version string) (string, error) {
+	f.activated = append(f.activated, version)
+	previous := f.previousVersion
+	f.currentVersion = version
+	return previous, f.activateErr
+}
 
 type fakeEmbedder struct {
 	inputs  []string
@@ -76,6 +104,45 @@ func TestServiceUploadBuildsAndPersistsChunks(t *testing.T) {
 	if document.Filename != "notes.md" || document.Size != 5 || documents.savedFilename != "notes.md" {
 		t.Fatalf("document = %#v, saved filename = %q", document, documents.savedFilename)
 	}
+	if document.Version == "" || documents.savedVersion != document.Version || len(repository.activated) != 1 {
+		t.Fatalf("version state = document:%q saved:%q activated:%#v", document.Version, documents.savedVersion, repository.activated)
+	}
+}
+
+func TestServiceUploadCleansNewVersionWhenChunkReplaceFails(t *testing.T) {
+	documents := &fakeDocumentStore{}
+	repository := &fakeChunkRepository{replaceErr: errors.New("redis unavailable")}
+	embedder := &fakeEmbedder{vectors: [][]float32{{1, 2}}}
+	service := newTestRAGService(t, documents, repository, embedder)
+
+	_, err := service.Upload(context.Background(), 42, "notes.md", []byte("hello"))
+	if err == nil || len(documents.deleted) != 1 || documents.deleted[0] != documents.savedVersion {
+		t.Fatalf("Upload() = %v, deleted versions = %#v, saved = %q", err, documents.deleted, documents.savedVersion)
+	}
+}
+
+func TestServiceUploadCleansNewVersionWhenActivationFails(t *testing.T) {
+	documents := &fakeDocumentStore{}
+	repository := &fakeChunkRepository{activateErr: errors.New("activate failed")}
+	service := newTestRAGService(t, documents, repository, &fakeEmbedder{vectors: [][]float32{{1, 2}}})
+
+	_, err := service.Upload(context.Background(), 42, "notes.md", []byte("hello"))
+	if err == nil || len(repository.deleted) != 0 || len(documents.deleted) != 0 {
+		t.Fatalf("Upload() = %v, repository deleted = %#v, document deleted = %#v", err, repository.deleted, documents.deleted)
+	}
+}
+
+func TestServiceUploadCleansPreviousVersionAfterActivation(t *testing.T) {
+	documents := &fakeDocumentStore{}
+	repository := &fakeChunkRepository{previousVersion: "old-version"}
+	service := newTestRAGService(t, documents, repository, &fakeEmbedder{vectors: [][]float32{{1, 2}}})
+
+	if _, err := service.Upload(context.Background(), 42, "notes.md", []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.deleted) != 0 || len(documents.deleted) != 1 || documents.deleted[0] != "old-version" {
+		t.Fatalf("old version cleanup = repository:%#v document:%#v", repository.deleted, documents.deleted)
+	}
 }
 
 func TestServiceUploadRejectsInvalidInputBeforeDependencies(t *testing.T) {
@@ -100,7 +167,7 @@ func TestServiceUploadRejectsInvalidEmbeddingResult(t *testing.T) {
 }
 
 func TestServiceRetrieveFindsRelevantChunks(t *testing.T) {
-	repository := &fakeChunkRepository{listed: []Chunk{
+	repository := &fakeChunkRepository{currentVersion: "current-version", listed: []Chunk{
 		{Content: "unrelated", Vector: []float32{0, 1}},
 		{Content: "relevant", Vector: []float32{1, 0}},
 	}}

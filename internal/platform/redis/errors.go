@@ -12,4 +12,5 @@ var (
 	ErrEmptyChunkVector   = errors.New("chunk's vector is empty")
 	ErrEmptyChunkContent  = errors.New("chunk's content is empty")
 	ErrInvalidChunkVector = errors.New("chunk's vector is invalid")
+	ErrInvalidVersion     = errors.New("version is invalid")
 )

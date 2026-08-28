@@ -9,6 +9,7 @@ type Embedder interface {
 type DocumentStore interface {
 	Save(ctx context.Context,
 		userID uint64,
+		version string,
 		filename string,
 		content []byte,
 	) error
@@ -16,28 +17,36 @@ type DocumentStore interface {
 	Load(
 		ctx context.Context,
 		userID uint64,
+		version string,
 	) ([]byte, string, error)
 	Delete(
 		ctx context.Context,
 		userID uint64,
+		version string,
 	) error
 }
 
-// 每一个用户一个redis key, gopherai:rag:chunks:{userID}
+// 每个用户按 version 保存 chunks，并通过 CurrentVersion/Activate 管理生效版本。
 type ChunkRepository interface {
 	Replace(
 		ctx context.Context,
 		userID uint64,
+		version string,
 		chunks []Chunk,
 	) error
 
 	List(
 		ctx context.Context,
 		userID uint64,
+		version string,
 	) ([]Chunk, error)
 
 	Delete(
 		ctx context.Context,
 		userID uint64,
+		version string,
 	) error
+
+	CurrentVersion(ctx context.Context, userID uint64) (string, error)
+	Activate(ctx context.Context, userID uint64, version string) (previous string, err error)
 }

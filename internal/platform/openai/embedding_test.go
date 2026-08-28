@@ -1,9 +1,11 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -121,5 +123,169 @@ func TestEmbedderRejectsDuplicateAndEmptyVectors(t *testing.T) {
 		if _, err := embedder.Embed(context.Background(), inputs[i]); !errors.Is(err, ErrEmbeddingResponseInvalid) {
 			t.Fatalf("case %d error = %v", i, err)
 		}
+	}
+}
+
+func TestEmbedderSplitsLargeInputAndPreservesGlobalOrder(t *testing.T) {
+	requestSizes := make([]int, 0, 3)
+	globalOffset := 0
+	httpClient := &http.Client{Transport: embeddingRoundTripper(func(req *http.Request) (*http.Response, error) {
+		var request struct {
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+			return nil, err
+		}
+
+		requestSizes = append(requestSizes, len(request.Input))
+		data := make([]map[string]any, 0, len(request.Input))
+		for index := len(request.Input) - 1; index >= 0; index-- {
+			value := float64(globalOffset + index)
+			data = append(data, map[string]any{
+				"index":     index,
+				"embedding": []float64{value, value + 0.5},
+			})
+		}
+		globalOffset += len(request.Input)
+		body, err := json.Marshal(map[string]any{"data": data})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	embedder, err := NewEmbedder("key", "model",
+		option.WithBaseURL("http://embedding.test/"), option.WithHTTPClient(httpClient))
+	if err != nil {
+		t.Fatal(err)
+	}
+	texts := make([]string, 130)
+	for i := range texts {
+		texts[i] = fmt.Sprintf("text-%d", i)
+	}
+
+	vectors, err := embedder.Embed(context.Background(), texts)
+	if err != nil {
+		t.Fatalf("Embed() error = %v", err)
+	}
+	if got := fmt.Sprint(requestSizes); got != "[64 64 2]" {
+		t.Fatalf("request sizes = %s, want [64 64 2]", got)
+	}
+	if len(vectors) != len(texts) {
+		t.Fatalf("vectors = %d, want %d", len(vectors), len(texts))
+	}
+	for i, vector := range vectors {
+		if len(vector) != 2 || vector[0] != float32(i) {
+			t.Fatalf("vector %d = %#v", i, vector)
+		}
+	}
+}
+
+func TestEmbedderReturnsNoPartialResultWhenLaterBatchFails(t *testing.T) {
+	requests := 0
+	httpClient := &http.Client{Transport: embeddingRoundTripper(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 2 {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"embedding failed"}}`)),
+				Request:    req,
+			}, nil
+		}
+
+		var request struct {
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+			return nil, err
+		}
+		data := make([]map[string]any, len(request.Input))
+		for i := range request.Input {
+			data[i] = map[string]any{"index": i, "embedding": []float64{1, 2}}
+		}
+		body, err := json.Marshal(map[string]any{"data": data})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	embedder, err := NewEmbedder("key", "model",
+		option.WithBaseURL("http://embedding.test/"),
+		option.WithHTTPClient(httpClient),
+		option.WithMaxRetries(0),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	texts := make([]string, maxEmbeddingBatchSize+1)
+	for i := range texts {
+		texts[i] = fmt.Sprintf("text-%d", i)
+	}
+
+	vectors, err := embedder.Embed(context.Background(), texts)
+	if !errors.Is(err, ErrEmbeddingFailed) {
+		t.Fatalf("Embed() error = %v, want %v", err, ErrEmbeddingFailed)
+	}
+	if vectors != nil {
+		t.Fatalf("vectors = %#v, want nil", vectors)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestEmbedderRejectsDimensionMismatchAcrossBatches(t *testing.T) {
+	requests := 0
+	httpClient := &http.Client{Transport: embeddingRoundTripper(func(req *http.Request) (*http.Response, error) {
+		requests++
+		var request struct {
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+			return nil, err
+		}
+		dimension := 2
+		if requests == 2 {
+			dimension = 3
+		}
+		data := make([]map[string]any, len(request.Input))
+		for i := range request.Input {
+			data[i] = map[string]any{"index": i, "embedding": make([]float64, dimension)}
+		}
+		body, err := json.Marshal(map[string]any{"data": data})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+	embedder, err := NewEmbedder("key", "model",
+		option.WithBaseURL("http://embedding.test/"), option.WithHTTPClient(httpClient))
+	if err != nil {
+		t.Fatal(err)
+	}
+	texts := make([]string, maxEmbeddingBatchSize+1)
+	for i := range texts {
+		texts[i] = fmt.Sprintf("text-%d", i)
+	}
+
+	if _, err := embedder.Embed(context.Background(), texts); !errors.Is(err, ErrEmbeddingResponseInvalid) {
+		t.Fatalf("Embed() error = %v, want %v", err, ErrEmbeddingResponseInvalid)
 	}
 }
