@@ -270,19 +270,22 @@ func (f *fakeStreamingLLMClient) Info() llm.ModelInfo {
 }
 
 type fakeModelCallService struct {
-	calls        *[]string
-	startCtx     context.Context
-	startUserID  uint64
-	started      *modelcall.Model
-	startErr     error
-	completeCtx  context.Context
-	completeUser uint64
-	completed    *modelcall.Model
-	completeErr  error
-	finishCtx    context.Context
-	finishUser   uint64
-	finished     *modelcall.Model
-	finishErr    error
+	calls             *[]string
+	startCtx          context.Context
+	startUserID       uint64
+	started           *modelcall.Model
+	startErr          error
+	completeCtx       context.Context
+	completeUser      uint64
+	completed         *modelcall.Model
+	completeErr       error
+	finishCtx         context.Context
+	finishUser        uint64
+	finished          *modelcall.Model
+	finishErr         error
+	finishCtxErr      error
+	finishDeadline    time.Time
+	finishHasDeadline bool
 }
 
 func (f *fakeModelCallService) Start(ctx context.Context, userID uint64, model *modelcall.Model) error {
@@ -316,11 +319,53 @@ func (f *fakeModelCallService) Finish(ctx context.Context, userID uint64, model 
 	f.finishCtx = ctx
 	f.finishUser = userID
 	f.finished = model
+	f.finishCtxErr = ctx.Err()
+	f.finishDeadline, f.finishHasDeadline = ctx.Deadline()
 	if f.finishErr == nil {
 		finishedAt := time.Date(2026, time.August, 11, 10, 0, 1, 0, time.UTC)
 		model.FinishedAt = &finishedAt
 	}
 	return f.finishErr
+}
+
+func TestFinishFailedModelCallUsesCleanupContextAndJoinsErrors(t *testing.T) {
+	calls := make([]string, 0, 1)
+	finishErr := errors.New("finish failed")
+	modelCalls := &fakeModelCallService{calls: &calls, finishErr: finishErr}
+	service := &Service{modelCall: modelCalls}
+	model := &modelcall.Model{Status: modelcall.StatusRunning}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := service.finishFailedModelCall(ctx, 7, model, context.Canceled, "llm")
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, finishErr) {
+		t.Fatalf("finishFailedModelCall() error = %v", err)
+	}
+	if model.Status != modelcall.StatusCancelled || model.ErrorCode == nil || *model.ErrorCode != "llm_cancelled" {
+		t.Fatalf("model = %#v", model)
+	}
+	if modelCalls.finishCtxErr != nil || !modelCalls.finishHasDeadline {
+		t.Fatalf("cleanup context error = %v, has deadline = %v", modelCalls.finishCtxErr, modelCalls.finishHasDeadline)
+	}
+	remaining := time.Until(modelCalls.finishDeadline)
+	if remaining <= 0 || remaining > modelCallFinishTimeout {
+		t.Fatalf("cleanup deadline remaining = %s", remaining)
+	}
+}
+
+func TestFinishFailedModelCallPreservesExistingTerminalFailure(t *testing.T) {
+	calls := make([]string, 0, 1)
+	modelCalls := &fakeModelCallService{calls: &calls}
+	service := &Service{modelCall: modelCalls}
+	errorCode := "assistant_message_timed_out"
+	model := &modelcall.Model{Status: modelcall.StatusTimedOut, ErrorCode: &errorCode}
+
+	if err := service.finishFailedModelCall(context.Background(), 7, model, errors.New("commit failed"), "model_call_complete"); err == nil {
+		t.Fatal("finishFailedModelCall() error = nil")
+	}
+	if model.Status != modelcall.StatusTimedOut || model.ErrorCode == nil || *model.ErrorCode != errorCode {
+		t.Fatalf("existing terminal failure was overwritten: %#v", model)
+	}
 }
 
 type fakeUnitOfWork struct {

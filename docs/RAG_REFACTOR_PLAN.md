@@ -208,7 +208,7 @@ Chat 限流行为不变。
 - Chat Feature 暴露 Message/Chat/ChatJob Handler，并统一管理 Consumer 启动与 RabbitMQ 关闭。
 - `buildRateLimiter` 统一解析正整数 limit/window 配置。
 - `connectPostgreSQL`、`connectRedis` 统一创建连接、启动探活和失败清理。
-- `startChatJobConsumer` 封装 Consumer goroutine 与单 Job 超时。
+- `chatFeature.StartConsumer` 封装 Consumer goroutine 与单 Job 超时。
 - 简单的用户、会话、消息组装继续保留在 `run()`，没有引入依赖注入容器。
 - 所有配置和依赖构造完成后才启动 RabbitMQ Consumer。
 - Router 使用 `RouterHandlers` 和 `RouterMiddleware` 两个命名结构替代位置参数列表。
@@ -224,7 +224,7 @@ buildRAGFeature(redisClient)
 buildRateLimiter(...)
 connectPostgreSQL(...)
 connectRedis(...)
-startChatJobConsumer(...)
+chatFeature.StartConsumer(...)
 ```
 
 约束：
@@ -245,7 +245,15 @@ run() 主要表达启动顺序和生命周期；
 
 ## 阶段 5：收敛 Chat model_call 失败收尾
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 新增 `finishFailedModelCall`，统一失败状态标记、cleanup context、`Finish` 和 `errors.Join`。
+- history、RAG prepare、LLM 和 assistant/complete 失败分支复用同一个收尾方法。
+- 已有的精确终态和 error code 不会被通用 helper 覆盖。
+- 原请求取消后，收尾仍使用不继承取消且带 5 秒 deadline 的 context。
+- 原始业务错误和 `Finish` 错误都会保留。
 
 问题：`history_load`、`prepare_model_message`、`llm` 等错误路径重复执行：
 

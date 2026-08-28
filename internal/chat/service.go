@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	defaultMessageLimit = 40
-	defaultRAGTopK      = 4
+	defaultMessageLimit    = 40
+	defaultRAGTopK         = 4
+	modelCallFinishTimeout = 5 * time.Second
 )
 
 type Service struct {
@@ -189,11 +190,7 @@ func (s *Service) respond(ctx context.Context, userID uint64,
 	generate generateFunc) (*Result, error) {
 	messages, err := s.messages.ListRecent(ctx, userID, conversationID, defaultMessageLimit)
 	if err != nil {
-		markModelCallFailure(model, err, "history_load")
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		err = errors.Join(err, s.modelCall.Finish(cleanupCtx, userID, model))
-		return nil, err
+		return nil, s.finishFailedModelCall(ctx, userID, model, err, "history_load")
 	}
 
 	modelMessages, err := s.prepareModelMessages(
@@ -203,35 +200,36 @@ func (s *Service) respond(ctx context.Context, userID uint64,
 		messages,
 	)
 	if err != nil {
-		markModelCallFailure(model, err, "prepare_model_message")
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		err = errors.Join(err, s.modelCall.Finish(cleanupCtx, userID, model))
-		return nil, err
+		return nil, s.finishFailedModelCall(ctx, userID, model, err, "prepare_model_message")
 	}
 
 	modelResult, err := generate(ctx, modelMessages)
 	if err != nil {
-		markModelCallFailure(model, err, "llm")
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		err = errors.Join(err, s.modelCall.Finish(cleanupCtx, userID, model))
-		return nil, err
+		return nil, s.finishFailedModelCall(ctx, userID, model, err, "llm")
 	}
 
 	assistant, err := s.saveAssistantAndComplete(ctx, userID, conversationID, modelResult, model)
 	if err != nil {
-		if !model.Status.IsFailureTerminal() {
-			markModelCallFailure(model, err, "model_call_complete")
-		}
-
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		err = errors.Join(err, s.modelCall.Finish(cleanupCtx, userID, model))
-		return nil, err
+		return nil, s.finishFailedModelCall(ctx, userID, model, err, "model_call_complete")
 	}
 
 	return toResult(assistant, modelResult), nil
+}
+
+func (s *Service) finishFailedModelCall(
+	ctx context.Context,
+	userID uint64,
+	model *modelcall.Model,
+	cause error,
+	operation string,
+) error {
+	if !model.Status.IsFailureTerminal() {
+		markModelCallFailure(model, cause, operation)
+	}
+
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), modelCallFinishTimeout)
+	defer cancel()
+	return errors.Join(cause, s.modelCall.Finish(cleanupCtx, userID, model))
 }
 
 func markModelCallFailure(model *modelcall.Model, err error, operation string) {
