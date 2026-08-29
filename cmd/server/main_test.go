@@ -21,6 +21,13 @@ var llmEnvironmentNames = []string{
 	"OPENAI_DISABLE_RESPONSE_STORAGE",
 }
 
+var embeddingEnvironmentNames = []string{
+	"OPENAI_EMBEDDING_API_KEY",
+	"OPENAI_EMBEDDING_BASE_URL",
+	"OPENAI_EMBEDDING_MODEL",
+	"OPENAI_EMBEDDING_REQUIRES_AUTH",
+}
+
 func TestLoadEnvironmentAllowsMissingFile(t *testing.T) {
 	t.Chdir(t.TempDir())
 
@@ -158,9 +165,64 @@ func TestConnectorsRejectMissingURLs(t *testing.T) {
 	}
 }
 
+func TestEmbeddingConfigFallsBackToGeneralOpenAIConnection(t *testing.T) {
+	clearLLMEnvironment(t)
+	clearEmbeddingEnvironment(t)
+	t.Setenv("OPENAI_API_KEY", "general-key")
+	t.Setenv("OPENAI_BASE_URL", "https://general.example/v1")
+	t.Setenv("OPENAI_REQUIRES_AUTH", "false")
+	t.Setenv("OPENAI_EMBEDDING_MODEL", "embedding-model")
+
+	config, err := embeddingConfigFromEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.APIKey != "general-key" || config.BaseURL != "https://general.example/v1" ||
+		config.Model != "embedding-model" || config.RequiresAuth {
+		t.Fatalf("embedding config = %#v", config)
+	}
+}
+
+func TestEmbeddingConfigUsesDedicatedConnection(t *testing.T) {
+	clearLLMEnvironment(t)
+	clearEmbeddingEnvironment(t)
+	t.Setenv("OPENAI_API_KEY", "general-key")
+	t.Setenv("OPENAI_BASE_URL", "https://general.example/v1")
+	t.Setenv("OPENAI_REQUIRES_AUTH", "false")
+	t.Setenv("OPENAI_EMBEDDING_API_KEY", "embedding-key")
+	t.Setenv("OPENAI_EMBEDDING_BASE_URL", "https://embedding.example/v1")
+	t.Setenv("OPENAI_EMBEDDING_MODEL", "embedding-model")
+	t.Setenv("OPENAI_EMBEDDING_REQUIRES_AUTH", "true")
+
+	config, err := embeddingConfigFromEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.APIKey != "embedding-key" || config.BaseURL != "https://embedding.example/v1" ||
+		config.Model != "embedding-model" || !config.RequiresAuth {
+		t.Fatalf("embedding config = %#v", config)
+	}
+}
+
+func TestEmbeddingConfigRejectsInvalidAuthSetting(t *testing.T) {
+	clearLLMEnvironment(t)
+	clearEmbeddingEnvironment(t)
+	t.Setenv("OPENAI_EMBEDDING_REQUIRES_AUTH", "invalid")
+	if _, err := embeddingConfigFromEnvironment(); err == nil || !strings.Contains(err.Error(), "OPENAI_EMBEDDING_REQUIRES_AUTH") {
+		t.Fatalf("embeddingConfigFromEnvironment() error = %v", err)
+	}
+}
+
 func clearLLMEnvironment(t *testing.T) {
 	t.Helper()
 	for _, name := range llmEnvironmentNames {
+		t.Setenv(name, "")
+	}
+}
+
+func clearEmbeddingEnvironment(t *testing.T) {
+	t.Helper()
+	for _, name := range embeddingEnvironmentNames {
 		t.Setenv(name, "")
 	}
 }

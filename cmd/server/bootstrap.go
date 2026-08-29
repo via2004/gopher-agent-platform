@@ -249,23 +249,33 @@ func buildLLMClient() (llm.ModelClient, error) {
 }
 
 func buildEmbedder() (rag.Embedder, error) {
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	model := os.Getenv("OPENAI_EMBEDDING_MODEL")
-	baseURL := os.Getenv("OPENAI_BASE_URL")
-	requiresAuth, err := envBool("OPENAI_REQUIRES_AUTH", true)
+	config, err := embeddingConfigFromEnvironment()
 	if err != nil {
 		return nil, err
 	}
-	embedder, err := openaiplatform.NewEmbedderWithConfig(openaiplatform.EmbeddingConfig{
-		APIKey:       apiKey,
-		Model:        model,
-		BaseURL:      baseURL,
-		RequiresAuth: requiresAuth,
-	})
+	embedder, err := openaiplatform.NewEmbedderWithConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("new OpenAI embedder: %w", err)
 	}
 	return embedder, nil
+}
+
+func embeddingConfigFromEnvironment() (openaiplatform.EmbeddingConfig, error) {
+	defaultRequiresAuth, err := envBool("OPENAI_REQUIRES_AUTH", true)
+	if err != nil {
+		return openaiplatform.EmbeddingConfig{}, err
+	}
+	requiresAuth, err := envBool("OPENAI_EMBEDDING_REQUIRES_AUTH", defaultRequiresAuth)
+	if err != nil {
+		return openaiplatform.EmbeddingConfig{}, err
+	}
+
+	return openaiplatform.EmbeddingConfig{
+		APIKey:       envOrDefault("OPENAI_EMBEDDING_API_KEY", os.Getenv("OPENAI_API_KEY")),
+		Model:        strings.TrimSpace(os.Getenv("OPENAI_EMBEDDING_MODEL")),
+		BaseURL:      envOrDefault("OPENAI_EMBEDDING_BASE_URL", os.Getenv("OPENAI_BASE_URL")),
+		RequiresAuth: requiresAuth,
+	}, nil
 }
 
 func loadEnvironment() error {
