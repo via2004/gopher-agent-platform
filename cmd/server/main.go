@@ -21,10 +21,9 @@ import (
 )
 
 const (
-	IPAddr    = "127.0.0.1"
-	Port      = ":8080"
-	jwtIssuer = "gopher-agent-platform"
-	jwtTTL    = time.Hour
+	defaultHTTPAddr = "127.0.0.1:8080"
+	jwtIssuer       = "gopher-agent-platform"
+	jwtTTL          = time.Hour
 )
 
 func run() error {
@@ -142,8 +141,10 @@ func run() error {
 		},
 	)
 
+	httpAddr := httpAddress()
+
 	server := &http.Server{
-		Addr:           IPAddr + Port,
+		Addr:           httpAddr,
 		Handler:        router,
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   10 * time.Second,
@@ -152,7 +153,7 @@ func run() error {
 
 	serverErrors := make(chan error, 1)
 	go func() {
-		log.Printf("listening on %s", IPAddr+Port)
+		log.Printf("listening on %s", httpAddr)
 		serverErrors <- server.ListenAndServe()
 	}()
 

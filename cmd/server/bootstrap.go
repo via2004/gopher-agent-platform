@@ -292,6 +292,10 @@ func envOrDefault(name, fallback string) string {
 	return fallback
 }
 
+func httpAddress() string {
+	return envOrDefault("HTTP_ADDR", defaultHTTPAddr)
+}
+
 func envBool(name string, fallback bool) (bool, error) {
 	value := strings.TrimSpace(os.Getenv(name))
 	if value == "" {

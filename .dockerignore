@@ -1,0 +1,30 @@
+# Version control and editor metadata
+.git
+.gitignore
+.vscode
+.idea
+
+# Secrets and local environment overrides
+.env
+.env.*
+!.env.example
+
+# Runtime data and temporary files
+data
+tmp
+*.log
+*.pid
+
+# Local build and test outputs
+bin
+dist
+coverage.out
+*.test
+
+# Large local model assets are downloaded during the image build
+models/*.onnx
+models/onnxruntime
+
+# Host-specific noise
+.DS_Store
+Thumbs.db

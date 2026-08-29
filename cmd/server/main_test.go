@@ -213,6 +213,18 @@ func TestEmbeddingConfigRejectsInvalidAuthSetting(t *testing.T) {
 	}
 }
 
+func TestHTTPAddress(t *testing.T) {
+	t.Setenv("HTTP_ADDR", "")
+	if got := httpAddress(); got != defaultHTTPAddr {
+		t.Fatalf("httpAddress() = %q, want %q", got, defaultHTTPAddr)
+	}
+
+	t.Setenv("HTTP_ADDR", " 0.0.0.0:8080 ")
+	if got := httpAddress(); got != "0.0.0.0:8080" {
+		t.Fatalf("httpAddress() = %q, want %q", got, "0.0.0.0:8080")
+	}
+}
+
 func clearLLMEnvironment(t *testing.T) {
 	t.Helper()
 	for _, name := range llmEnvironmentNames {
