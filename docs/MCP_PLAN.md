@@ -261,7 +261,16 @@ context canceled / deadline exceeded
 
 ## 阶段 1：MCP SDK 最小闭环
 
-状态：`pending`
+状态：`completed`
+
+完成内容：
+
+- 引入官方 MCP Go SDK v1.7.0。
+- 使用 `httptest` 和 Streamable HTTP 跑通无会话 Client/Server。
+- 确认协商协议版本为 `2026-07-28`。
+- 使用泛型 `AddTool` 自动生成并校验 echo 工具 Schema。
+- 覆盖 tools/list、tools/call、非法参数拦截和 Context 取消传播。
+- 测试不依赖真实天气 API、模型或外部 MCP Server。
 
 任务：
 
