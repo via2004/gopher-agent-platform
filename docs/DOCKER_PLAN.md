@@ -262,7 +262,18 @@ Dockerfile 需要的源码和标签文件仍可复制。
 
 ## 阶段 3：Backend Dockerfile
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 使用 Go 1.25 Bookworm Builder 和 Debian Bookworm Slim Runtime 两个阶段。
+- Builder 启用 CGo 编译 linux/amd64 server。
+- 构建时下载固定版本 ONNX Runtime 和 MobileNetV2，并校验 SHA-256。
+- 基础镜像、GOPROXY 和模型下载 URL 均可通过 build args 覆盖，默认仍使用官方来源。
+- Runtime 从同版本 Builder 复制 CA 证书、`libstdc++` 和 `libgcc`，不运行 apt。
+- Runtime 使用数字非 root 用户 `10001:10001`。
+- 镜像内只保留 server、ONNX Runtime、模型和标签，不包含源码或 `.env`。
+- 本机使用 Podman 实际构建成功，镜像约 169 MB，并通过 ONNX 初始化 smoke test。
 
 使用多阶段构建。
 
@@ -298,7 +309,7 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
 职责：
 
 ```text
-安装 CA 证书
+复制 CA 证书和 ONNX 所需系统动态库
 创建非 root 用户
 复制 server
 复制 ONNX Runtime、模型和标签
@@ -311,13 +322,16 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
 ```dockerfile
 FROM debian:bookworm-slim
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /app/models/onnxruntime /app/data/rag \
+    && chown -R 10001:10001 /app
 
 WORKDIR /app
 
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt \
+    /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /out/server /app/server
+
+USER 10001:10001
 
 EXPOSE 8080
 
@@ -337,7 +351,15 @@ server 能加载 ONNX Runtime 与模型；
 
 ## 阶段 4：单独运行 Backend 容器
 
-状态：`pending`
+状态：`completed`
+
+当前进度：
+
+- 使用已构建的 `localhost/gopherai-backend:dev` 运行容器。
+- 通过 host network 连接宿主机 PostgreSQL、Valkey 和 RabbitMQ。
+- `/healthz` 和 `/readyz` 均返回 200。
+- ONNX Runtime 已在容器内成功初始化。
+- Compose 环境中已完成注册、RAG 上传、ONNX 图片识别和 ChatJob/RAG 验收。
 
 暂时复用宿主机基础设施，验证 Backend 镜像本身。
 
@@ -357,7 +379,18 @@ RAG 上传和问答
 
 ## 阶段 5：Compose 基础设施
 
-状态：`pending`
+状态：`completed`
+
+前置条件：本机需要安装 Docker Compose v2 或 Podman Compose provider。本机已在用户目录安装 Podman Compose provider，并通过 `podman compose version` 验证。
+
+完成记录：
+
+- 新增 `compose.yaml`，编排 Backend、PostgreSQL、Valkey、RabbitMQ 和 migration。
+- PostgreSQL、Valkey、RabbitMQ 使用独立健康检查。
+- RabbitMQ healthcheck 以 `rabbitmq` 用户执行，兼容 rootless Podman Volume 权限。
+- Backend 通过 Compose service DNS 连接依赖，不使用 `localhost`。
+- 新增 `.env.compose.example`，将容器配置与宿主机 `.env` 分离。
+- 使用用户目录中的 Podman Compose provider 实际执行 `config` 和 `up`，所有服务成功启动。
 
 新增：
 
@@ -395,7 +428,15 @@ Backend 不使用 localhost 连接其他容器；
 
 ## 阶段 6：Migration 自动化
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 新增一次性 migration service 和 `scripts/migrate.sh`。
+- 使用 `schema_migrations` 表按文件名记录已执行 migration。
+- 每个 migration SQL 与记录写入同一 PostgreSQL 事务。
+- Backend 等待 migration 成功后启动。
+- 重启时已执行 migration 会被跳过，实际验证通过。
 
 目标：新环境不再手动逐个执行 SQL 文件。
 
@@ -415,11 +456,20 @@ Migration 失败时 Backend 不启动；
 现有数据库升级路径明确。
 ```
 
+第一版使用 PostgreSQL 内的 `schema_migrations` 表记录已经执行的 up 文件，避免持久化 Volume 在重复启动时再次执行同一 migration。
+
 具体工具在进入本阶段前再决定，不提前引入。
 
 ## 阶段 7：Volume 与重启恢复
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- PostgreSQL、Valkey、RabbitMQ 和 RAG 文档均使用命名 Volume。
+- 实际执行 `compose down`（不带 `-v`）再 `up`。
+- 原用户、会话、消息、Redis current/version 和 RAG 文档均保留。
+- 重启后 RAG Chat 仍能返回验收文档中的唯一答案。
 
 为以下数据增加 Volume：
 
@@ -449,7 +499,19 @@ docker compose down -v
 
 ## 阶段 8：最终验收与文档
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- `go test ./...` 和 `go vet ./...` 通过。
+- `sh -n scripts/migrate.sh`、`git diff --check` 和 `podman compose config --quiet` 通过。
+- Backend 镜像使用非 root 用户运行，镜像内仅包含 server、ONNX Runtime、模型和标签，不包含源码、`.env` 或 API Key。
+- Compose 的 PostgreSQL、Valkey、RabbitMQ 健康检查通过，7 个 migration 均已登记；重复启动时 migration 会跳过已执行文件。
+- 完成注册、登录、创建会话、RAG 上传、ONNX 图片识别和异步 ChatJob 的真实 E2E，ChatJob 返回 RAG 文档中的唯一答案。
+- 执行不带 `-v` 的 `compose down/up` 后，用户、会话、消息、已完成 ChatJob、Redis current 版本和 RAG 文件均保留。
+- 验收发现 Podman Compose 可能在 RabbitMQ 监听端口前启动 Backend；已增加 15 次、每次间隔 1 秒的有限连接重试，并重新完成冷启动验收。
+- 调整 Dockerfile 层顺序，使固定模型资产下载不随 Go 源码变化反复失效；最终使用 `--no-cache` 验证完整镜像构建。
+- Backend README 已记录配置、构建、启动、健康检查、日志、重建、停止和数据清理命令。
 
 任务：
 

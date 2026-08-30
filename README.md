@@ -1,23 +1,91 @@
 # GopherAI Backend
 
-This directory contains our backend implementation. The `GopherAI-v1` and
-`GopherAI-v2` directories at the repository root are reference code only.
+GopherAI 的 Go 后端实现，使用 Gin、PostgreSQL、Valkey/Redis、RabbitMQ、
+OpenAI 兼容 API 和 ONNX Runtime。
 
 ```text
 backend/
-├── cmd/server/                 application entry point
-├── internal/httpapi/           Gin handlers, middleware, and routes
-├── internal/user/              user business module and repository contract
-├── internal/platform/postgresql/ PostgreSQL repository implementations
-└── migrations/                 database schema migrations
+├── cmd/server/                    应用入口和依赖组装
+├── internal/httpapi/              Handler、中间件和路由
+├── internal/                      业务 Service 和 Repository 接口
+├── internal/platform/             PostgreSQL、Redis、RabbitMQ、OpenAI、ONNX 等实现
+├── migrations/                    PostgreSQL migration
+└── scripts/migrate.sh             Compose migration 入口
 ```
 
-The first feature is user registration. Start from the business logic in
-`internal/user`; HTTP and PostgreSQL integration are added after that behavior
-is covered by tests.
+## Docker Compose 运行
 
-Run the PostgreSQL repository integration test against a migrated test
-database:
+Compose 会启动 Backend、PostgreSQL、Valkey、RabbitMQ，并通过一次性 migration
+容器初始化或升级数据库。需要 Docker Compose v2，或者已配置 Compose provider 的
+Podman。
+
+先创建容器专用配置，并填写 JWT、Chat Provider 和 Embedding Provider 配置：
+
+```bash
+cp .env.compose.example .env.compose
+```
+
+`.env.compose` 包含本机密钥且已被 Git 忽略。PostgreSQL、Valkey 和 RabbitMQ 的
+容器内部连接地址由 `compose.yaml` 设置，不需要写入该文件。
+
+构建并启动：
+
+```bash
+docker compose up --build -d
+```
+
+使用 Podman 时将 `docker compose` 替换为 `podman compose`。启动后检查：
+
+```bash
+docker compose ps
+curl http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/readyz
+```
+
+查看和跟踪 Backend 日志：
+
+```bash
+docker compose logs backend
+docker compose logs -f backend
+```
+
+重新构建 Backend 并启动：
+
+```bash
+docker compose build backend
+docker compose up -d
+```
+
+如果 Podman 构建日志异常地复用了跨阶段 `COPY --from=builder` 缓存，可以强制完整重建：
+
+```bash
+podman compose build --no-cache backend
+podman compose up -d --force-recreate backend
+```
+
+停止并删除容器，但保留 PostgreSQL、Valkey、RabbitMQ 和 RAG 数据卷：
+
+```bash
+docker compose down
+```
+
+彻底清空本项目的容器数据：
+
+```bash
+docker compose down -v
+```
+
+`down -v` 会不可恢复地删除数据库、队列、Redis 和 RAG 文档数据，只应在明确需要
+重置开发环境时使用。
+
+## 本地验证
+
+```bash
+go test ./...
+go vet ./...
+```
+
+PostgreSQL integration 测试需要一个已经执行 migration 的独立测试数据库：
 
 ```bash
 TEST_DATABASE_URL='postgres://user:password@127.0.0.1:5432/gopherai_test' \

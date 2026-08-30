@@ -30,7 +30,13 @@ import (
 	"gopherai/internal/rag"
 )
 
-const dependencyPingTimeout = 5 * time.Second
+const (
+	dependencyPingTimeout        = 5 * time.Second
+	rabbitMQConnectAttempts      = 15
+	rabbitMQConnectRetryInterval = time.Second
+)
+
+type rabbitMQConnector func(string) (*rabbitmqplatform.RabbitMQClient, error)
 
 type imageFeature struct {
 	handler    *httpapi.ImageHandler
@@ -79,7 +85,13 @@ func buildChatFeature(
 	maxAttempts int64,
 	rabbitMQURL string,
 ) (*chatFeature, error) {
-	rabbitMQ, err := rabbitmqplatform.NewRabbitMQClient(rabbitMQURL)
+	rabbitMQ, err := connectRabbitMQWithRetry(
+		context.Background(),
+		rabbitMQURL,
+		rabbitmqplatform.NewRabbitMQClient,
+		rabbitMQConnectAttempts,
+		rabbitMQConnectRetryInterval,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("new RabbitMQ client: %w", err)
 	}
@@ -102,6 +114,37 @@ func buildChatFeature(
 		jobService:     jobService,
 		rabbitMQ:       rabbitMQ,
 	}, nil
+}
+
+func connectRabbitMQWithRetry(
+	ctx context.Context,
+	url string,
+	connect rabbitMQConnector,
+	maxAttempts int,
+	retryInterval time.Duration,
+) (*rabbitmqplatform.RabbitMQClient, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		client, err := connect(url)
+		if err == nil {
+			return client, nil
+		}
+		lastErr = err
+		if errors.Is(err, rabbitmqplatform.ErrURLInvalid) || attempt == maxAttempts {
+			break
+		}
+
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-ctx.Done():
+			// ctx 已取消本轮等待，停止未使用的 Timer，避免它之后继续触发。
+			timer.Stop()
+			return nil, fmt.Errorf("wait to retry RabbitMQ connection: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+
+	return nil, fmt.Errorf("connect RabbitMQ after %d attempts: %w", maxAttempts, lastErr)
 }
 
 func (f *chatFeature) StartConsumer(ctx context.Context) <-chan error {

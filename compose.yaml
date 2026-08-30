@@ -1,0 +1,97 @@
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-docker.io/library/postgres:17-bookworm}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-gopherai}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gopherai-dev}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  valkey:
+    image: ${VALKEY_IMAGE:-docker.io/valkey/valkey:8-bookworm}
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: ${RABBITMQ_IMAGE:-docker.io/library/rabbitmq:4.3.4-management}
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-gopherai}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-gopherai-dev}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-gopherai}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    ports:
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    healthcheck:
+      test: ["CMD", "gosu", "rabbitmq", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  migration:
+    image: ${POSTGRES_IMAGE:-docker.io/library/postgres:17-bookworm}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-gopherai}
+      PGUSER: ${POSTGRES_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-gopherai-dev}
+    volumes:
+      - ./migrations:/migrations:ro
+      - ./scripts/migrate.sh:/scripts/migrate.sh:ro
+    entrypoint: ["/bin/sh", "/scripts/migrate.sh"]
+
+  backend:
+    image: ${BACKEND_IMAGE:-localhost/gopherai-backend:dev}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GO_IMAGE: ${GO_IMAGE:-docker.io/library/golang:1.25-bookworm}
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-docker.io/library/debian:bookworm-slim}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    env_file:
+      - .env.compose
+    environment:
+      HTTP_ADDR: 0.0.0.0:8080
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-gopherai-dev}@postgres:5432/${POSTGRES_DB:-gopherai}
+      REDIS_URL: redis://valkey:6379/0
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-gopherai}:${RABBITMQ_PASSWORD:-gopherai-dev}@rabbitmq:5672/${RABBITMQ_VHOST:-gopherai}
+      ONNXRUNTIME_SHARED_LIBRARY_PATH: /app/models/onnxruntime/libonnxruntime.so.1.22.0
+      IMAGE_MODEL_PATH: /app/models/mobilenetv2-7.onnx
+      IMAGE_LABELS_PATH: /app/models/imagenet_classes.txt
+      RAG_STORAGE_ROOT: /app/data/rag
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    volumes:
+      - rag-data:/app/data/rag
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  valkey-data:
+  rabbitmq-data:
+  rag-data:

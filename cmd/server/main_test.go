@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"gopherai/internal/llm"
 	openaiplatform "gopherai/internal/platform/openai"
+	rabbitmqplatform "gopherai/internal/platform/rabbitmq"
 )
 
 var llmEnvironmentNames = []string{
@@ -162,6 +165,61 @@ func TestConnectorsRejectMissingURLs(t *testing.T) {
 	}
 	if _, err := connectRedis(""); err == nil || !strings.Contains(err.Error(), "REDIS_URL") {
 		t.Fatalf("connectRedis() error = %v", err)
+	}
+}
+
+func TestConnectRabbitMQWithRetryEventuallySucceeds(t *testing.T) {
+	attempts := 0
+	wantClient := &rabbitmqplatform.RabbitMQClient{}
+	client, err := connectRabbitMQWithRetry(
+		context.Background(),
+		"amqp://rabbitmq",
+		func(string) (*rabbitmqplatform.RabbitMQClient, error) {
+			attempts++
+			if attempts < 3 {
+				return nil, rabbitmqplatform.ErrAMQPDialFailed
+			}
+			return wantClient, nil
+		},
+		3,
+		0,
+	)
+	if err != nil || client != wantClient || attempts != 3 {
+		t.Fatalf("connectRabbitMQWithRetry() = %p, %v after %d attempts", client, err, attempts)
+	}
+}
+
+func TestConnectRabbitMQWithRetryStopsAtAttemptLimit(t *testing.T) {
+	attempts := 0
+	_, err := connectRabbitMQWithRetry(
+		context.Background(),
+		"amqp://rabbitmq",
+		func(string) (*rabbitmqplatform.RabbitMQClient, error) {
+			attempts++
+			return nil, rabbitmqplatform.ErrAMQPDialFailed
+		},
+		3,
+		0,
+	)
+	if !errors.Is(err, rabbitmqplatform.ErrAMQPDialFailed) || attempts != 3 {
+		t.Fatalf("connectRabbitMQWithRetry() error = %v after %d attempts", err, attempts)
+	}
+}
+
+func TestConnectRabbitMQWithRetryRejectsInvalidURLImmediately(t *testing.T) {
+	attempts := 0
+	_, err := connectRabbitMQWithRetry(
+		context.Background(),
+		"",
+		func(string) (*rabbitmqplatform.RabbitMQClient, error) {
+			attempts++
+			return nil, rabbitmqplatform.ErrURLInvalid
+		},
+		3,
+		time.Hour,
+	)
+	if !errors.Is(err, rabbitmqplatform.ErrURLInvalid) || attempts != 1 {
+		t.Fatalf("connectRabbitMQWithRetry() error = %v after %d attempts", err, attempts)
 	}
 }
 
