@@ -353,7 +353,17 @@ Server 不可用、超时和非法结果有明确错误。
 
 ## 阶段 4：OpenAI Responses Tool Calling
 
-状态：`pending`
+状态：`completed`
+
+完成内容：
+
+- 增加模型无关的 `ToolCall`、`ToolModelResult` 和 `ToolModel` 接口。
+- 将内部 `ToolDefinition` 转换为 Responses API `function` tool。
+- 解析 `response.function_call` 为结构化 ToolCall，不解析模型生成的自定义 JSON 文本。
+- 使用 SDK 构造 `function_call` 和 `function_call_output` 输入项。
+- 支持普通文本结果、工具调用结果和 token usage 读取。
+- 校验工具定义、ToolCall 字段和 function_call_output 参数。
+- 使用 fake HTTP transport 覆盖工具定义、结构化调用、结果回填和 Provider 错误。
 
 任务：
 
