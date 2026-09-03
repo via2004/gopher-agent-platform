@@ -291,7 +291,17 @@ context 取消能够终止调用；
 
 ## 阶段 2：Weather Client 与 get_weather Server
 
-状态：`pending`
+状态：`completed`
+
+完成内容：
+
+- 新增可配置 BaseURL、HTTP Client 和请求超时的 Weather Client。
+- 校验城市输入、Provider HTTP 状态、响应体大小和天气字段。
+- 将 Provider 响应转换为项目自己的稳定 `weather.Result` 模型。
+- 使用 MCP SDK 泛型 `AddTool` 注册只读 `get_weather` 工具。
+- 新增独立 `cmd/mcpserver`，提供 `/mcp` 和 `/healthz`。
+- 增加天气 Provider、Context 取消、工具成功调用和 Provider 错误测试。
+- 独立 MCP Server 二进制实际启动、健康检查和 SIGTERM 优雅退出验证通过。
 
 任务：
 
