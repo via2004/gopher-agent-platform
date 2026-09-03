@@ -53,7 +53,7 @@ func run() error {
 		func(*http.Request) *mcpsdk.Server { return mcpServer },
 		&mcpsdk.StreamableHTTPOptions{
 			// 使用无会话模式，每次请求能够独立处理
-			Stateless:                    true,
+			Stateless: true,
 			// MCP Client取消请求后，取消信号会一直传播到weatherClient.Get(ctx, city)
 			PropagateRequestCancellation: true,
 			MaxRequestBodyBytes:          maxMCPRequestBodyBytes,
@@ -67,16 +67,16 @@ func run() error {
 	})
 
 	server := &http.Server{
-		Addr:              envOrDefault("MCP_HTTP_ADDR", defaultHTTPAddr),
-		Handler:           mux,
+		Addr:    envOrDefault("MCP_HTTP_ADDR", defaultHTTPAddr),
+		Handler: mux,
 		// 读取请求头最多 5 秒
 		ReadHeaderTimeout: 5 * time.Second,
 		// 读取完整请求最多 10 秒
-		ReadTimeout:       10 * time.Second,
+		ReadTimeout: 10 * time.Second,
 		// 写出完整响应最多 15 秒
-		WriteTimeout:      15 * time.Second,
+		WriteTimeout: 15 * time.Second,
 		// 空闲连接最多保留 60 秒
-		IdleTimeout:       60 * time.Second,
+		IdleTimeout: 60 * time.Second,
 	}
 
 	serverErrors := make(chan error, 1)

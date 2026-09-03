@@ -322,7 +322,17 @@ MCP Server 可以独立启动和优雅退出。
 
 ## 阶段 3：Backend MCP Client / Tool Executor
 
-状态：`pending`
+状态：`completed`
+
+完成内容：
+
+- 新增不依赖 MCP SDK 的内部 `llm.ToolDefinition`。
+- 实现 Streamable HTTP MCP Client，在启动时发现并缓存 `get_weather`。
+- 工具定义只暴露固定 allowlist，并通过深拷贝保护内部缓存。
+- `Call` 在本地校验工具名和 JSON object 参数，再执行 MCP `tools/call`。
+- 将 MCP `StructuredContent` 转成稳定 JSON，供后续 OpenAI Tool Calling 使用。
+- 区分连接、工具发现、Tool Error、调用超时和非法工具结果。
+- 使用真实 `httptest` Streamable HTTP 覆盖正常调用、拦截、错误和超时。
 
 任务：
 

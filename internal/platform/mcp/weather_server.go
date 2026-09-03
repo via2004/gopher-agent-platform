@@ -2,14 +2,13 @@ package mcp
 
 import (
 	"context"
-	"errors"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"gopherai/internal/weather"
 )
 
-var ErrInvalidWeatherClient = errors.New("weather client is invalid")
+const WeatherToolName = "get_weather"
 
 // WeatherClient 是 MCP Server 依赖的天气查询边界，便于替换为测试实现。
 type WeatherClient interface {
@@ -33,7 +32,7 @@ func NewWeatherServer(client WeatherClient) (*mcpsdk.Server, error) {
 	}, nil)
 	readOnly, destructive := true, false
 	mcpsdk.AddTool(server, &mcpsdk.Tool{
-		Name:        "get_weather",
+		Name:        WeatherToolName,
 		Description: "query current weather for a city",
 		Annotations: &mcpsdk.ToolAnnotations{ReadOnlyHint: readOnly, DestructiveHint: &destructive},
 	}, func(ctx context.Context, _ *mcpsdk.CallToolRequest, input WeatherInput) (*mcpsdk.CallToolResult, *weather.Result, error) {
