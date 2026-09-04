@@ -32,3 +32,9 @@ type ToolModel interface {
 	GenerateWithTools(ctx context.Context, messages []Message, tools []ToolDefinition) (*ToolModelResult, error)
 	GenerateWithToolResult(ctx context.Context, messages []Message, continuation []json.RawMessage, call ToolCall, output json.RawMessage) (*Result, error)
 }
+
+// StreamingToolModel 是支持流式规划和流式最终回答的工具模型边界。
+type StreamingToolModel interface {
+	GenerateStreamWithTools(ctx context.Context, messages []Message, tools []ToolDefinition, onDelta func(string) error) (*ToolModelResult, error)
+	GenerateStreamWithToolResult(ctx context.Context, messages []Message, continuation []json.RawMessage, call ToolCall, output json.RawMessage, onDelta func(string) error) (*Result, error)
+}

@@ -185,3 +185,96 @@ func TestClientGenerateStreamReturnsFailedResponse(t *testing.T) {
 		t.Fatalf("GenerateStream() error = %v, want wrapped provider failure", err)
 	}
 }
+
+func TestClientGenerateStreamWithToolsReturnsToolCall(t *testing.T) {
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, req *http.Request) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],\"encrypted_content\":\"opaque\"}}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"上海\\\"}\"}}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-tool\",\"usage\":{\"input_tokens\":11,\"output_tokens\":4,\"total_tokens\":15},\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],\"encrypted_content\":\"opaque\"},{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"上海\\\"}\"}]}}\n\n"))
+	}))
+	defer server.Close()
+
+	client, err := NewClient("test-key", "gpt-test", option.WithBaseURL(server.URL+"/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deltas []string
+	got, err := client.GenerateStreamWithTools(context.Background(), []llm.Message{{Role: "user", Content: "上海天气"}}, []llm.ToolDefinition{{
+		Name: "get_weather", InputSchema: json.RawMessage(weatherToolSchema),
+	}}, func(delta string) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deltas) != 0 || len(got.ToolCalls) != 1 {
+		t.Fatalf("deltas = %#v, tool calls = %#v", deltas, got.ToolCalls)
+	}
+	call := got.ToolCalls[0]
+	if call.Name != "get_weather" || string(call.Arguments) != `{"city":"上海"}` || len(got.Continuation) != 2 {
+		t.Fatalf("tool result = %#v continuation = %#v", call, got.Continuation)
+	}
+	if got.Result.InputTokens != 11 || got.Result.OutputTokens != 4 || got.Result.TotalTokens != 15 {
+		t.Fatalf("result = %#v", got.Result)
+	}
+	if request["tools"] == nil || request["include"] == nil {
+		t.Fatalf("request missing tools/include: %#v", request)
+	}
+}
+
+func TestClientGenerateStreamWithToolResultStreamsFinalAnswer(t *testing.T) {
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, req *http.Request) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"上海现在\"}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"晴，23°C\"}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-final\",\"usage\":{\"input_tokens\":20,\"output_tokens\":5,\"total_tokens\":25},\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"上海现在晴，23°C\"}]}]}}\n\n"))
+	}))
+	defer server.Close()
+
+	client, err := NewClient("test-key", "gpt-test", option.WithBaseURL(server.URL+"/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := llm.ToolCall{ID: "fc_1", CallID: "call_1", Name: "get_weather", Arguments: json.RawMessage(`{"city":"上海"}`)}
+	continuation := []json.RawMessage{json.RawMessage(`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"上海\"}"}`)}
+	var deltas []string
+	result, err := client.GenerateStreamWithToolResult(context.Background(), []llm.Message{{Role: "user", Content: "上海天气"}}, continuation, call, json.RawMessage(`{"location":"上海","temperature_c":23}`), func(delta string) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "上海现在晴，23°C" || result.TotalTokens != 25 || strings.Join(deltas, "") != result.Content {
+		t.Fatalf("result = %#v, deltas = %#v", result, deltas)
+	}
+	input, ok := request["input"].([]any)
+	if !ok || len(input) != 3 {
+		t.Fatalf("request input = %#v", request["input"])
+	}
+	if item, ok := input[2].(map[string]any); !ok || item["type"] != "function_call_output" {
+		t.Fatalf("function output = %#v", input[2])
+	}
+}

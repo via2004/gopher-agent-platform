@@ -418,7 +418,16 @@ ChatJob 复用同一 Tool Loop；
 
 ## 阶段 6：SSE Tool Calling
 
-状态：`pending`
+状态：`completed`
+
+完成内容：
+
+- OpenAI 流式 Responses 适配层支持带工具的规划请求和工具结果回填。
+- 解析流式文本 delta、function call output item 和完成事件。
+- Agent 流式路径完成“规划、MCP 调用、最终回答流”的单轮 Tool Loop。
+- 工具参数和 MCP 原始结果不会通过用户 SSE 回调输出。
+- 无 ToolCall 时保持原有实时文本流；有 ToolCall 时最终回答继续流式输出。
+- 覆盖流式 ToolCall、最终回答、Context 错误和 token usage 传递测试。
 
 任务：
 

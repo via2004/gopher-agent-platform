@@ -57,6 +57,35 @@ type fakeTools struct {
 	arguments   json.RawMessage
 }
 
+type fakeStreamingModel struct {
+	fakeModel
+	streamPlanning    *llm.ToolModelResult
+	streamPlanningErr error
+	streamFinal       *llm.Result
+	streamFinalErr    error
+	streamCall        llm.ToolCall
+	streamOutput      json.RawMessage
+}
+
+func (f *fakeStreamingModel) GenerateStreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDefinition, _ func(string) error) (*llm.ToolModelResult, error) {
+	return f.streamPlanning, f.streamPlanningErr
+}
+
+func (f *fakeStreamingModel) GenerateStreamWithToolResult(_ context.Context, _ []llm.Message, _ []json.RawMessage, call llm.ToolCall, output json.RawMessage, onDelta func(string) error) (*llm.Result, error) {
+	f.streamCall = call
+	f.streamOutput = output
+	if f.streamFinalErr != nil {
+		return nil, f.streamFinalErr
+	}
+	if err := onDelta("final "); err != nil {
+		return nil, err
+	}
+	if err := onDelta("answer"); err != nil {
+		return nil, err
+	}
+	return f.streamFinal, nil
+}
+
 func (f *fakeTools) Tools() []llm.ToolDefinition { return f.definitions }
 
 func (f *fakeTools) Call(_ context.Context, name string, arguments json.RawMessage) (json.RawMessage, error) {
@@ -185,6 +214,41 @@ func TestClientDelegatesStreamingAndModelInfo(t *testing.T) {
 	}
 	if info := client.Info(); info != model.info {
 		t.Fatalf("Info() = %#v", info)
+	}
+}
+
+func TestClientGenerateStreamExecutesToolAndAggregatesUsage(t *testing.T) {
+	call := llm.ToolCall{ID: "fc_1", CallID: "call_1", Name: "get_weather", Arguments: json.RawMessage(`{"city":"上海"}`)}
+	toolOutput := json.RawMessage(`{"location":"上海","temperature_c":23}`)
+	model := &fakeStreamingModel{
+		streamPlanning: &llm.ToolModelResult{
+			Result:       &llm.Result{InputTokens: 10, OutputTokens: 3, TotalTokens: 13},
+			ToolCalls:    []llm.ToolCall{call},
+			Continuation: []json.RawMessage{json.RawMessage(`{"type":"function_call"}`)},
+		},
+		streamFinal: &llm.Result{Content: "final answer", InputTokens: 20, OutputTokens: 5, TotalTokens: 25},
+	}
+	tools := &fakeTools{output: toolOutput, definitions: []llm.ToolDefinition{{Name: "get_weather"}}}
+	client, err := NewClient(model, tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deltas []string
+	result, err := client.GenerateStream(t.Context(), []llm.Message{{Role: "user", Content: "上海天气"}}, func(delta string) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "final answer" || result.InputTokens != 30 || result.OutputTokens != 8 || result.TotalTokens != 38 {
+		t.Fatalf("GenerateStream() = %#v", result)
+	}
+	if len(deltas) != 2 || deltas[0] != "final " || deltas[1] != "answer" {
+		t.Fatalf("deltas = %#v", deltas)
+	}
+	if tools.calls != 1 || model.streamCall.Name != call.Name || string(model.streamOutput) != string(toolOutput) {
+		t.Fatalf("tool call = %d, %s, %s", tools.calls, model.streamCall.Name, model.streamOutput)
 	}
 }
 

@@ -71,22 +71,6 @@ func NewClientWithConfig(config Config, options ...option.RequestOption) (*Clien
 	}, nil
 }
 
-/*
-ResponseNewParams.Input
-    ↓
-ResponseNewParamsInputUnion
-    ↓
-OfInputItemList
-    ↓
-ResponseInputParam
-    ↓
-ResponseInputItemUnionParam
-    ↓
-OfMessage
-    ↓
-EasyInputMessageParam
-*/
-
 func (c *Client) Generate(ctx context.Context, messages []llm.Message) (*llm.Result, error) {
 	response, err := c.client.Responses.New(ctx, responses.ResponseNewParams{
 		Model: c.model,
@@ -103,7 +87,22 @@ func (c *Client) Generate(ctx context.Context, messages []llm.Message) (*llm.Res
 	return resultFromResponse(response), nil
 }
 
-// GenerateWithTools 发送工具定义，让模型返回普通文本或结构化 function call。
+/*
+GenerateWithTools 发送工具定义，让模型返回普通文本或结构化 function call。
+Tool Use用:
+Include:
+
+	[]responses.ResponseIncludable{
+		// 返回模型推理过程对应的加密内容，放在reasoning output item的encrypted_content字段中
+		responses.ResponseIncludableReasoningEncryptedContent,
+	},
+
+的原因:
+因为后续还要再调一次LLM总结这一次Tool Use以及历史上下文的结果
+所以这里把工具调用大模型的思考上下文也带了出来,因为我们禁用了OPENAI云存储历史记录,
+所以需要在本地获取这些历史记录, 然后把历史记录和思考记录的所有流程交给总结答案的LLM
+让他有最完整的上下文,生成最终答案.
+*/
 func (c *Client) GenerateWithTools(ctx context.Context, messages []llm.Message, tools []llm.ToolDefinition) (*llm.ToolModelResult, error) {
 	params, err := functionTools(tools)
 	if err != nil {
@@ -114,7 +113,6 @@ func (c *Client) GenerateWithTools(ctx context.Context, messages []llm.Message, 
 		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: messagesToInput(messages)},
 		Tools: params,
 		Include: []responses.ResponseIncludable{
-			// 返回模型推理过程对应的加密内容，放在reasoning output item的encrypted_content字段中
 			responses.ResponseIncludableReasoningEncryptedContent,
 		},
 		Store: openaisdk.Bool(!c.disableResponseStorage),
@@ -254,60 +252,138 @@ func (c *Client) GenerateStream(ctx context.Context, messages []llm.Message, onD
 	if onDelta == nil {
 		return nil, llm.ErrOnDeltaMissed
 	}
-	resultMessage := make([]rune, 0)
 
-	stream := c.client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
+	response, content, err := c.streamResponse(ctx, responses.ResponseNewParams{
 		Model: c.model,
 		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: messagesToInput(messages)},
 		Store: openaisdk.Bool(!c.disableResponseStorage),
 		Reasoning: responses.ReasoningParam{
 			Effort: responses.ReasoningEffort(c.reasoningEffort),
 		},
-	})
+	}, onDelta)
+	if err != nil {
+		return nil, err
+	}
+	result = resultFromResponse(response)
+	result.Content = content
+	return result, nil
+}
 
+// GenerateStreamWithTools 流式请求工具定义，返回普通文本或结构化 ToolCall。
+func (c *Client) GenerateStreamWithTools(ctx context.Context, messages []llm.Message, tools []llm.ToolDefinition, onDelta func(string) error) (*llm.ToolModelResult, error) {
+	if onDelta == nil {
+		return nil, llm.ErrOnDeltaMissed
+	}
+	params, err := functionTools(tools)
+	if err != nil {
+		return nil, err
+	}
+	response, content, err := c.streamResponse(ctx, responses.ResponseNewParams{
+		Model: c.model,
+		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: messagesToInput(messages)},
+		Tools: params,
+		Include: []responses.ResponseIncludable{
+			responses.ResponseIncludableReasoningEncryptedContent,
+		},
+		Store: openaisdk.Bool(!c.disableResponseStorage),
+		Reasoning: responses.ReasoningParam{
+			Effort: responses.ReasoningEffort(c.reasoningEffort),
+		},
+	}, onDelta)
+	if err != nil {
+		return nil, err
+	}
+	toolCalls, err := parseToolCalls(response.Output)
+	if err != nil {
+		return nil, err
+	}
+	continuation, err := continuationFromOutput(response.Output)
+	if err != nil {
+		return nil, err
+	}
+	result := resultFromResponse(response)
+	result.Content = content
+	return &llm.ToolModelResult{
+		Result:       result,
+		ToolCalls:    toolCalls,
+		Continuation: continuation,
+	}, nil
+}
+
+// GenerateStreamWithToolResult 将工具结果回填模型，并流式输出最终回答。
+func (c *Client) GenerateStreamWithToolResult(ctx context.Context, messages []llm.Message, continuation []json.RawMessage, call llm.ToolCall, output json.RawMessage, onDelta func(string) error) (*llm.Result, error) {
+	if onDelta == nil {
+		return nil, llm.ErrOnDeltaMissed
+	}
+	if call.ID == "" || call.CallID == "" || call.Name == "" ||
+		!json.Valid(call.Arguments) || len(continuation) == 0 ||
+		len(output) == 0 || !json.Valid(output) {
+		return nil, ErrInvalidToolCall
+	}
+
+	input := messagesToInput(messages)
+	for _, item := range continuation {
+		if !json.Valid(item) {
+			return nil, ErrInvalidToolCall
+		}
+		input = append(input, param.Override[responses.ResponseInputItemUnionParam](json.RawMessage(bytes.Clone(item))))
+	}
+	input = append(input, responses.ResponseInputItemParamOfFunctionCallOutput(call.CallID, string(output)))
+	response, content, err := c.streamResponse(ctx, responses.ResponseNewParams{
+		Model: c.model,
+		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: input},
+		Store: openaisdk.Bool(!c.disableResponseStorage),
+		Reasoning: responses.ReasoningParam{
+			Effort: responses.ReasoningEffort(c.reasoningEffort),
+		},
+	}, onDelta)
+	if err != nil {
+		return nil, err
+	}
+	result := resultFromResponse(response)
+	result.Content = content
+	return result, nil
+}
+
+func (c *Client) streamResponse(ctx context.Context, params responses.ResponseNewParams, onDelta func(string) error) (result *responses.Response, content string, err error) {
+	stream := c.client.Responses.NewStreaming(ctx, params)
 	defer func() {
-		if errs := stream.Close(); errs != nil {
-			err = errors.Join(err, fmt.Errorf("close stream error: %w", errs))
+		if closeErr := stream.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close stream error: %w", closeErr))
 		}
 	}()
 
 	completed := false
+	resultMessage := make([]rune, 0)
 	for stream.Next() {
 		data := stream.Current()
 		switch data.Type {
 		case "response.output_text.delta":
-			// 输出文本片段
 			if err := onDelta(data.Delta); err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			resultMessage = append(resultMessage, []rune(data.Delta)...)
 		case "response.completed":
-			// 完成
 			completed = true
-			result = &llm.Result{
-				Content:      string(resultMessage),
-				Model:        data.Response.Model,
-				InputTokens:  data.Response.Usage.InputTokens,
-				OutputTokens: data.Response.Usage.OutputTokens,
-				TotalTokens:  data.Response.Usage.TotalTokens,
-			}
+			response := data.AsResponseCompleted().Response
+			result = &response
 		case "response.failed":
-			return nil, fmt.Errorf("%w: msg: %s; code: %s", llm.ErrResponseFailed,
+			return nil, "", fmt.Errorf("%w: msg: %s; code: %s", llm.ErrResponseFailed,
 				data.Response.Error.Message, data.Response.Error.Code)
+		case "response.incomplete":
+			return nil, "", llm.ErrResponseNotCompleted
 		}
 		if completed {
 			break
 		}
 	}
-
 	if err := stream.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if !completed {
-		return nil, llm.ErrResponseNotCompleted
+	if !completed || result == nil {
+		return nil, "", llm.ErrResponseNotCompleted
 	}
-
-	return result, nil
+	return result, string(resultMessage), nil
 }
 
 func (c *Client) Info() llm.ModelInfo {

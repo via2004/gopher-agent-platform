@@ -79,7 +79,43 @@ func (c *Client) Generate(ctx context.Context, messages []llm.Message) (*llm.Res
 
 // GenerateStream 在阶段 6 前保持原有流式模型行为，不执行工具调用。
 func (c *Client) GenerateStream(ctx context.Context, messages []llm.Message, onDelta func(string) error) (*llm.Result, error) {
-	return c.model.GenerateStream(ctx, messages, onDelta)
+	streamingModel, ok := c.model.(llm.StreamingToolModel)
+	toolDefinitions := c.tools.Tools()
+	if !ok || len(toolDefinitions) == 0 {
+		return c.model.GenerateStream(ctx, messages, onDelta)
+	}
+
+	planning, err := streamingModel.GenerateStreamWithTools(ctx, messages, toolDefinitions, onDelta)
+	if err != nil {
+		return nil, err
+	}
+	if planning == nil || planning.Result == nil {
+		return nil, ErrInvalidPlanning
+	}
+	switch len(planning.ToolCalls) {
+	case 0:
+		return planning.Result, nil
+	case 1:
+	default:
+		return nil, ErrMultipleToolCalls
+	}
+
+	call := planning.ToolCalls[0]
+	output, err := c.tools.Call(ctx, call.Name, call.Arguments)
+	if err != nil {
+		return nil, err
+	}
+	final, err := streamingModel.GenerateStreamWithToolResult(ctx, messages, planning.Continuation, call, output, onDelta)
+	if err != nil {
+		return nil, err
+	}
+	if final == nil {
+		return nil, ErrInvalidFinalResult
+	}
+	final.InputTokens += planning.Result.InputTokens
+	final.OutputTokens += planning.Result.OutputTokens
+	final.TotalTokens += planning.Result.TotalTokens
+	return final, nil
 }
 
 func (c *Client) Info() llm.ModelInfo {
