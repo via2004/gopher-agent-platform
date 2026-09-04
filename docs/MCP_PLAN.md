@@ -361,6 +361,7 @@ Server 不可用、超时和非法结果有明确错误。
 - 将内部 `ToolDefinition` 转换为 Responses API `function` tool。
 - 解析 `response.function_call` 为结构化 ToolCall，不解析模型生成的自定义 JSON 文本。
 - 使用 SDK 构造 `function_call` 和 `function_call_output` 输入项。
+- `store=false` 时保存并重放第一次响应的全部 output items，包括加密 reasoning continuation。
 - 支持普通文本结果、工具调用结果和 token usage 读取。
 - 校验工具定义、ToolCall 字段和 function_call_output 参数。
 - 使用 fake HTTP transport 覆盖工具定义、结构化调用、结果回填和 Provider 错误。
@@ -385,7 +386,18 @@ Server 不可用、超时和非法结果有明确错误。
 
 ## 阶段 5：Agent Client 与普通 Chat/ChatJob
 
-状态：`pending`
+状态：`completed`
+
+完成内容：
+
+- 新增实现 `llm.ModelClient` 的 Agent Client。
+- 同步 `Generate` 完成“模型规划、MCP 工具执行、模型最终回答”的单轮 Tool Loop。
+- 无 ToolCall 时直接返回 planning 文本，多 ToolCall 时按冻结边界拒绝执行。
+- 汇总 planning 与 final 两次模型请求的 token usage。
+- 在 bootstrap 中按 `MCP_SERVER_URL` 可选启用 Agent，并管理 MCP session 关闭。
+- MCP 未配置时保持原 OpenAI Client，现有普通 Chat 和 ChatJob 接口不变。
+- Agent、各阶段错误和 bootstrap 组装均有单元测试。
+- `GenerateStream` 目前仅委托原模型，不执行工具；流式 Tool Calling 留在阶段 6。
 
 任务：
 

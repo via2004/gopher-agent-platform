@@ -3,15 +3,22 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"gopherai/internal/agent"
 	"gopherai/internal/llm"
+	mcpplatform "gopherai/internal/platform/mcp"
 	openaiplatform "gopherai/internal/platform/openai"
 	rabbitmqplatform "gopherai/internal/platform/rabbitmq"
+	"gopherai/internal/weather"
 )
 
 var llmEnvironmentNames = []string{
@@ -76,6 +83,62 @@ func TestBuildLLMClientBuildsConfiguredOpenAIClient(t *testing.T) {
 	}
 	if _, ok := client.(*openaiplatform.Client); !ok {
 		t.Fatalf("buildLLMClient() client = %T, want *openai.Client", client)
+	}
+}
+
+func TestBuildModelFeatureWithoutMCPKeepsBaseModel(t *testing.T) {
+	clearLLMEnvironment(t)
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("OPENAI_MODEL", "gpt-test")
+	t.Setenv("MCP_SERVER_URL", "")
+
+	feature, err := buildModelFeature(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := feature.client.(*openaiplatform.Client); !ok {
+		t.Fatalf("model client = %T, want *openai.Client", feature.client)
+	}
+	if err := feature.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuildModelFeatureWrapsToolModelWithAgent(t *testing.T) {
+	clearLLMEnvironment(t)
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("OPENAI_MODEL", "gpt-test")
+	t.Setenv("MCP_CALL_TIMEOUT_SECONDS", "1")
+
+	server, err := mcpplatform.NewWeatherServer(bootstrapWeatherClient{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := mcpsdk.NewStreamableHTTPHandler(
+		func(*http.Request) *mcpsdk.Server { return server },
+		&mcpsdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+	t.Setenv("MCP_SERVER_URL", httpServer.URL)
+
+	feature, err := buildModelFeature(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := feature.client.(*agent.Client); !ok {
+		t.Fatalf("model client = %T, want *agent.Client", feature.client)
+	}
+	if err := feature.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuildModelFeatureRejectsMCPWithoutToolModel(t *testing.T) {
+	clearLLMEnvironment(t)
+	t.Setenv("MCP_SERVER_URL", "http://mcp.example/mcp")
+	if _, err := buildModelFeature(t.Context()); err == nil || !strings.Contains(err.Error(), "does not support tool calling") {
+		t.Fatalf("buildModelFeature() error = %v", err)
 	}
 }
 
@@ -154,6 +217,25 @@ func TestPositiveEnvInt64(t *testing.T) {
 			t.Setenv("TEST_POSITIVE_INT", value)
 			if _, err := positiveEnvInt64("TEST_POSITIVE_INT"); err == nil || !strings.Contains(err.Error(), "TEST_POSITIVE_INT") {
 				t.Fatalf("positiveEnvInt64(%q) error = %v", value, err)
+			}
+		})
+	}
+}
+
+func TestPositiveDurationEnvOrDefault(t *testing.T) {
+	t.Setenv("TEST_DURATION_SECONDS", "")
+	if got, err := positiveDurationEnvOrDefault("TEST_DURATION_SECONDS", 3*time.Second); err != nil || got != 3*time.Second {
+		t.Fatalf("default duration = %v, %v", got, err)
+	}
+	t.Setenv("TEST_DURATION_SECONDS", " 7 ")
+	if got, err := positiveDurationEnvOrDefault("TEST_DURATION_SECONDS", time.Second); err != nil || got != 7*time.Second {
+		t.Fatalf("configured duration = %v, %v", got, err)
+	}
+	for _, value := range []string{"invalid", "0", "-1"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("TEST_DURATION_SECONDS", value)
+			if _, err := positiveDurationEnvOrDefault("TEST_DURATION_SECONDS", time.Second); err == nil {
+				t.Fatalf("duration %q error = nil", value)
 			}
 		})
 	}
@@ -295,4 +377,10 @@ func clearEmbeddingEnvironment(t *testing.T) {
 	for _, name := range embeddingEnvironmentNames {
 		t.Setenv(name, "")
 	}
+}
+
+type bootstrapWeatherClient struct{}
+
+func (bootstrapWeatherClient) Get(context.Context, string) (*weather.Result, error) {
+	return &weather.Result{Location: "test"}, nil
 }

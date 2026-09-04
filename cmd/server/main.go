@@ -72,10 +72,15 @@ func run() error {
 	conversationService := conversation.NewService(platform.NewConversationRepository(pool))
 	conversationHandler := httpapi.NewConversationHandler(conversationService)
 
-	modelClient, err := buildLLMClient()
+	modelFeature, err := buildModelFeature(context.Background())
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err := modelFeature.Close(); err != nil {
+			log.Printf("close model feature: %v", err)
+		}
+	}()
 
 	redisClient, err := connectRedis(os.Getenv("REDIS_URL"))
 	if err != nil {
@@ -99,7 +104,7 @@ func run() error {
 
 	chatFeature, err := buildChatFeature(
 		pool,
-		modelClient,
+		modelFeature.client,
 		ragFeature.service,
 		maxAttemptCount,
 		rabbitmqURL,

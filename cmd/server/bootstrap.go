@@ -14,6 +14,7 @@ import (
 	"github.com/joho/godotenv"
 	redisclient "github.com/redis/go-redis/v9"
 
+	"gopherai/internal/agent"
 	"gopherai/internal/chat"
 	"gopherai/internal/chatjob"
 	"gopherai/internal/httpapi"
@@ -22,6 +23,7 @@ import (
 	"gopherai/internal/message"
 	"gopherai/internal/modelcall"
 	filesystem "gopherai/internal/platform/filesystem"
+	mcpplatform "gopherai/internal/platform/mcp"
 	onnxplatform "gopherai/internal/platform/onnx"
 	openaiplatform "gopherai/internal/platform/openai"
 	platform "gopherai/internal/platform/postgresql"
@@ -34,6 +36,7 @@ const (
 	dependencyPingTimeout        = 5 * time.Second
 	rabbitMQConnectAttempts      = 15
 	rabbitMQConnectRetryInterval = time.Second
+	defaultMCPCallTimeout        = 10 * time.Second
 )
 
 type rabbitMQConnector func(string) (*rabbitmqplatform.RabbitMQClient, error)
@@ -41,6 +44,51 @@ type rabbitMQConnector func(string) (*rabbitmqplatform.RabbitMQClient, error)
 type imageFeature struct {
 	handler    *httpapi.ImageHandler
 	classifier *onnxplatform.Classifier
+}
+
+type modelFeature struct {
+	client llm.ModelClient
+	close  func() error
+}
+
+func buildModelFeature(ctx context.Context) (*modelFeature, error) {
+	base, err := buildLLMClient()
+	if err != nil {
+		return nil, err
+	}
+	endpoint := strings.TrimSpace(os.Getenv("MCP_SERVER_URL"))
+	if endpoint == "" {
+		return &modelFeature{client: base}, nil
+	}
+
+	toolModel, ok := base.(agent.Model)
+	if !ok {
+		return nil, errors.New("configured model does not support tool calling")
+	}
+	timeout, err := positiveDurationEnvOrDefault("MCP_CALL_TIMEOUT_SECONDS", defaultMCPCallTimeout)
+	if err != nil {
+		return nil, err
+	}
+	tools, err := mcpplatform.NewClient(ctx, mcpplatform.Config{
+		Endpoint: endpoint,
+		Timeout:  timeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("new MCP client: %w", err)
+	}
+	agentClient, err := agent.NewClient(toolModel, tools)
+	if err != nil {
+		_ = tools.Close()
+		return nil, fmt.Errorf("new agent client: %w", err)
+	}
+	return &modelFeature{client: agentClient, close: tools.Close}, nil
+}
+
+func (f *modelFeature) Close() error {
+	if f == nil || f.close == nil {
+		return nil
+	}
+	return f.close()
 }
 
 func buildImageFeature() (*imageFeature, error) {
@@ -224,6 +272,21 @@ func positiveEnvInt64(name string) (int64, error) {
 		return 0, fmt.Errorf("%s must be positive", name)
 	}
 	return value, nil
+}
+
+func positiveDurationEnvOrDefault(name string, fallback time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	seconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", name, err)
+	}
+	if seconds <= 0 {
+		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	return time.Duration(seconds) * time.Second, nil
 }
 
 func connectPostgreSQL(databaseURL string) (*pgxpool.Pool, error) {

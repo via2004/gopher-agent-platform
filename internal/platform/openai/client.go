@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -113,6 +114,7 @@ func (c *Client) GenerateWithTools(ctx context.Context, messages []llm.Message, 
 		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: messagesToInput(messages)},
 		Tools: params,
 		Include: []responses.ResponseIncludable{
+			// 返回模型推理过程对应的加密内容，放在reasoning output item的encrypted_content字段中
 			responses.ResponseIncludableReasoningEncryptedContent,
 		},
 		Store: openaisdk.Bool(!c.disableResponseStorage),
@@ -149,7 +151,7 @@ func (c *Client) GenerateWithToolResult(ctx context.Context, messages []llm.Mess
 		if !json.Valid(item) {
 			return nil, ErrInvalidToolCall
 		}
-		input = append(input, param.Override[responses.ResponseInputItemUnionParam](append(json.RawMessage(nil), item...)))
+		input = append(input, param.Override[responses.ResponseInputItemUnionParam](json.RawMessage(bytes.Clone(item))))
 	}
 	input = append(input, responses.ResponseInputItemParamOfFunctionCallOutput(call.CallID, string(output)))
 	response, err := c.client.Responses.New(ctx, responses.ResponseNewParams{
@@ -243,7 +245,7 @@ func continuationFromOutput(items []responses.ResponseOutputItemUnion) ([]json.R
 		if !json.Valid(raw) {
 			return nil, ErrInvalidToolCall
 		}
-		continuation = append(continuation, append(json.RawMessage(nil), raw...))
+		continuation = append(continuation, bytes.Clone(raw))
 	}
 	return continuation, nil
 }
