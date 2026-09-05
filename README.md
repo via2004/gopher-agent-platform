@@ -49,6 +49,20 @@ docker compose logs backend
 docker compose logs -f backend
 ```
 
+Compose 默认同时启动内部 MCP Weather Server。Backend 会通过
+`http://mcp-server:8081/mcp` 发现并调用只读的 `get_weather` 工具；该地址由
+`compose.yaml` 设置，不需要写入 `.env.compose`。天气 Provider 可以通过以下配置调整：
+
+```env
+WEATHER_API_BASE_URL=https://wttr.in
+WEATHER_API_TIMEOUT_SECONDS=5
+MCP_CALL_TIMEOUT_SECONDS=10
+```
+
+普通 Chat、SSE Chat 和 ChatJob 都共用同一套 Agent Tool Use 能力。可以用“上海现在天气
+怎么样？”验证天气工具，用 `/chat/stream` 验证增量输出，用 `/chat-jobs` 验证 RabbitMQ
+异步任务。
+
 重新构建 Backend 并启动：
 
 ```bash

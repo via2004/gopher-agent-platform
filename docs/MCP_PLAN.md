@@ -489,7 +489,18 @@ MCP Server 重启后调用错误可诊断；
 
 ## 阶段 8：真实 E2E 与收尾
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- Compose 冷启动后，`/healthz` 和 `/readyz` 均通过。
+- 普通 Chat 未触发天气工具，正常返回最终回答。
+- 普通天气 Chat 成功经过 Agent -> MCP Client -> MCP Server -> Weather Provider。
+- SSE 天气 Chat 返回多个 `delta` 和一个 `done`，未向客户端泄露工具调用细节。
+- 天气 ChatJob 经 RabbitMQ 消费后完成，并保存 assistant message。
+- RAG 文档与天气工具同时启用时，模型同时返回文档事实和实时天气。
+- 重启 MCP Server 后，Backend 再次调用天气工具成功。
+- `go test ./...`、`go vet ./...` 和 `git diff --check` 通过。
 
 验收问题：
 
