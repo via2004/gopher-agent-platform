@@ -386,7 +386,15 @@ context deadline exceeded        -> 504 Gateway Timeout
 
 ### 阶段 1：领域模型与 Service
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 新增 `internal/tts` 的 Task、Status、Provider 和 Service。
+- 未配置 Provider 时统一返回 `ErrNotConfigured`，不影响 Backend 其他功能。
+- 创建任务会校验 UTF-8、空文本和 100000 字符上限，查询会校验 task ID。
+- Service 会拒绝空结果、未知状态和字段组合不合法的 Provider Task。
+- 单元测试覆盖合法状态、输入边界、错误传播、Context 取消和异常 Provider 结果。
 
 - 新增 `internal/tts`。
 - 定义 Task、Status、Provider 和业务错误。
@@ -431,4 +439,3 @@ context deadline exceeded        -> 504 Gateway Timeout
 - [百度长文本在线合成 API](https://cloud.baidu.com/doc/SPEECH/s/ulbxh8rbu)
 - [百度语音技术鉴权认证](https://cloud.baidu.com/doc/SPEECH/s/cm8sn2bii)
 - [百度语音技术错误码](https://cloud.baidu.com/doc/SPEECH/s/Zlbxew2qk)
-
