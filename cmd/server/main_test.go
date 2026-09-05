@@ -305,6 +305,43 @@ func TestConnectRabbitMQWithRetryRejectsInvalidURLImmediately(t *testing.T) {
 	}
 }
 
+func TestConnectMCPWithRetryEventuallySucceeds(t *testing.T) {
+	attempts := 0
+	want := &mcpplatform.Client{}
+	client, err := connectMCPWithRetry(t.Context(), mcpplatform.Config{}, func(context.Context, mcpplatform.Config) (*mcpplatform.Client, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, mcpplatform.ErrConnectFailed
+		}
+		return want, nil
+	}, 3, 0)
+	if err != nil || client != want || attempts != 3 {
+		t.Fatalf("connectMCPWithRetry() = %p, %v after %d attempts", client, err, attempts)
+	}
+}
+
+func TestConnectMCPWithRetryStopsForNonRetryableError(t *testing.T) {
+	attempts := 0
+	_, err := connectMCPWithRetry(t.Context(), mcpplatform.Config{}, func(context.Context, mcpplatform.Config) (*mcpplatform.Client, error) {
+		attempts++
+		return nil, mcpplatform.ErrWeatherToolNotFound
+	}, 3, time.Hour)
+	if !errors.Is(err, mcpplatform.ErrWeatherToolNotFound) || attempts != 1 {
+		t.Fatalf("connectMCPWithRetry() error = %v after %d attempts", err, attempts)
+	}
+}
+
+func TestConnectMCPWithRetryStopsAtAttemptLimit(t *testing.T) {
+	attempts := 0
+	_, err := connectMCPWithRetry(t.Context(), mcpplatform.Config{}, func(context.Context, mcpplatform.Config) (*mcpplatform.Client, error) {
+		attempts++
+		return nil, mcpplatform.ErrListToolsFailed
+	}, 3, 0)
+	if !errors.Is(err, mcpplatform.ErrListToolsFailed) || attempts != 3 {
+		t.Fatalf("connectMCPWithRetry() error = %v after %d attempts", err, attempts)
+	}
+}
+
 func TestEmbeddingConfigFallsBackToGeneralOpenAIConnection(t *testing.T) {
 	clearLLMEnvironment(t)
 	clearEmbeddingEnvironment(t)

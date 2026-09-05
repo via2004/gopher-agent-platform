@@ -55,6 +55,20 @@ services:
       - ./scripts/migrate.sh:/scripts/migrate.sh:ro
     entrypoint: ["/bin/sh", "/scripts/migrate.sh"]
 
+  mcp-server:
+    image: ${BACKEND_IMAGE:-localhost/gopherai-backend:dev}
+    entrypoint: ["/app/mcpserver"]
+    environment:
+      MCP_HTTP_ADDR: 0.0.0.0:8081
+      WEATHER_API_BASE_URL: ${WEATHER_API_BASE_URL:-https://wttr.in}
+      WEATHER_API_TIMEOUT_SECONDS: ${WEATHER_API_TIMEOUT_SECONDS:-5}
+    healthcheck:
+      test: ["CMD", "/app/healthcheck", "http://127.0.0.1:8081/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   backend:
     image: ${BACKEND_IMAGE:-localhost/gopherai-backend:dev}
     build:
@@ -75,6 +89,7 @@ services:
       IMAGE_MODEL_PATH: /app/models/mobilenetv2-7.onnx
       IMAGE_LABELS_PATH: /app/models/imagenet_classes.txt
       RAG_STORAGE_ROOT: /app/data/rag
+      MCP_SERVER_URL: http://mcp-server:8081/mcp
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,6 +99,8 @@ services:
         condition: service_healthy
       migration:
         condition: service_completed_successfully
+      mcp-server:
+        condition: service_healthy
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     volumes:

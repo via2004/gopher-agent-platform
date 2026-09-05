@@ -447,7 +447,18 @@ model_call 状态与 token usage 正确。
 
 ## 阶段 7：配置与 Compose
 
-状态：`pending`
+状态：`completed`
+
+完成内容：
+
+- `.env.example` 和 `.env.compose.example` 已补 MCP 与 Weather 配置。
+- Dockerfile 同时构建 Backend、MCP Server 和轻量 healthcheck 二进制。
+- Compose 增加只在内部网络运行的 `mcp-server`，不映射宿主机端口。
+- Backend 使用 `http://mcp-server:8081/mcp` 并等待 MCP Server 健康。
+- MCP Client 启动连接只对连接和工具发现错误进行 15 次有限重试。
+- URL、配置和工具缺失等不可重试错误会立即失败。
+- 实际无缓存构建镜像并重建 Compose，MCP Server healthy 且 Backend readiness 通过。
+- MCP Server 与 Backend 均保留 SIGTERM 优雅退出路径。
 
 新增配置：
 

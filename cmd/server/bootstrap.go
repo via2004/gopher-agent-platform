@@ -37,9 +37,12 @@ const (
 	rabbitMQConnectAttempts      = 15
 	rabbitMQConnectRetryInterval = time.Second
 	defaultMCPCallTimeout        = 10 * time.Second
+	mcpConnectAttempts           = 15
+	mcpConnectRetryInterval      = time.Second
 )
 
 type rabbitMQConnector func(string) (*rabbitmqplatform.RabbitMQClient, error)
+type mcpConnector func(context.Context, mcpplatform.Config) (*mcpplatform.Client, error)
 
 type imageFeature struct {
 	handler    *httpapi.ImageHandler
@@ -69,10 +72,10 @@ func buildModelFeature(ctx context.Context) (*modelFeature, error) {
 	if err != nil {
 		return nil, err
 	}
-	tools, err := mcpplatform.NewClient(ctx, mcpplatform.Config{
+	tools, err := connectMCPWithRetry(ctx, mcpplatform.Config{
 		Endpoint: endpoint,
 		Timeout:  timeout,
-	})
+	}, mcpplatform.NewClient, mcpConnectAttempts, mcpConnectRetryInterval)
 	if err != nil {
 		return nil, fmt.Errorf("new MCP client: %w", err)
 	}
@@ -82,6 +85,36 @@ func buildModelFeature(ctx context.Context) (*modelFeature, error) {
 		return nil, fmt.Errorf("new agent client: %w", err)
 	}
 	return &modelFeature{client: agentClient, close: tools.Close}, nil
+}
+
+func connectMCPWithRetry(
+	ctx context.Context,
+	config mcpplatform.Config,
+	connect mcpConnector,
+	maxAttempts int,
+	retryInterval time.Duration,
+) (*mcpplatform.Client, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		client, err := connect(ctx, config)
+		if err == nil {
+			return client, nil
+		}
+		lastErr = err
+		if (!errors.Is(err, mcpplatform.ErrConnectFailed) &&
+			!errors.Is(err, mcpplatform.ErrListToolsFailed)) || attempt == maxAttempts {
+			break
+		}
+
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, fmt.Errorf("wait to retry MCP connection: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+	return nil, fmt.Errorf("connect MCP after %d attempts: %w", maxAttempts, lastErr)
 }
 
 func (f *modelFeature) Close() error {

@@ -35,7 +35,11 @@ RUN set -eux; \
 COPY . .
 
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+    go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags="-s -w" -o /out/mcpserver ./cmd/mcpserver \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags="-s -w" -o /out/healthcheck ./cmd/healthcheck
 
 FROM ${RUNTIME_IMAGE} AS runtime
 
@@ -51,6 +55,8 @@ COPY --from=builder /usr/lib/x86_64-linux-gnu/libstdc++.so.6* /usr/lib/x86_64-li
 COPY --from=builder /lib/x86_64-linux-gnu/libgcc_s.so.1 /lib/x86_64-linux-gnu/libgcc_s.so.1
 
 COPY --from=builder --chown=10001:10001 /out/server /app/server
+COPY --from=builder --chown=10001:10001 /out/mcpserver /app/mcpserver
+COPY --from=builder --chown=10001:10001 /out/healthcheck /app/healthcheck
 COPY --from=builder --chown=10001:10001 \
     /out/models/onnxruntime/libonnxruntime.so.${ONNXRUNTIME_VERSION} \
     /app/models/onnxruntime/libonnxruntime.so.${ONNXRUNTIME_VERSION}
@@ -68,7 +74,7 @@ ENV GIN_MODE=release \
 
 USER 10001:10001
 
-EXPOSE 8080
+EXPOSE 8080 8081
 
 STOPSIGNAL SIGTERM
 
