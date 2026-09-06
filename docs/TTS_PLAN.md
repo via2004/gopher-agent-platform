@@ -53,7 +53,7 @@ succeeded     -> audio_url
 第一版使用百度智能云长文本在线合成 API，与 GopherAI-v2 保持一致：
 
 ```text
-OAuth Token: POST https://aip.baidubce.com/oauth/2.0/token
+nei rongOAuth Token: POST https://aip.baidubce.com/oauth/2.0/token
 创建任务:    POST https://aip.baidubce.com/rpc/2.0/tts/v1/create
 查询任务:    POST https://aip.baidubce.com/rpc/2.0/tts/v1/query
 ```
@@ -76,6 +76,8 @@ HTTP API 第一版只让用户传入文本，不开放音色、格式、音调�
 
 ## 冻结的功能范围
 
+
+
 ### 本轮实现
 
 - 使用 API Key 和 Secret Key 获取百度 Access Token。
@@ -87,6 +89,8 @@ HTTP API 第一版只让用户传入文本，不开放音色、格式、音调�
 - TTS 未配置时不影响 Backend 启动，对接口返回 503。
 - Handler、Service、Provider Client、配置和测试完整闭环。
 - Docker Compose 透传 TTS 配置。
+
+
 
 ### 本轮不实现
 
@@ -100,6 +104,8 @@ HTTP API 第一版只让用户传入文本，不开放音色、格式、音调�
 - 不自动把每条 Chat 回复转成语音。
 - 不提供批量任务查询接口。
 - 不抽象成动态多 TTS Provider 平台。
+
+
 
 ## HTTP 接口
 
@@ -134,6 +140,8 @@ HTTP/1.1 202 Accepted
 - 必须是合法 UTF-8 文本。
 - 最多 100000 个 Unicode 字符，与 Provider 官方上限一致。
 - Handler 请求体最大 1 MiB。
+
+
 
 ### 查询任务
 
@@ -278,6 +286,8 @@ BAIDU_TTS_TIMEOUT_SECONDS=10
 - 两者都配置：初始化百度 TTS Client。
 - Base URL 主要用于测试和兼容代理，默认使用百度官方地址。
 
+
+
 ## Access Token 管理
 
 百度 API Key 和 Secret Key 不直接用于每次合成请求，而是先交换 Access Token：
@@ -296,6 +306,8 @@ Client 在内存中缓存 Token 与过期时间：
 - 并发刷新由互斥锁收敛，避免同时请求大量 Token。
 - 进程重启后重新获取，不把 Token 写入数据库或 Redis。
 - 日志不得打印 API Key、Secret Key、Access Token 或带 Token 的完整 URL。
+
+
 
 ## 错误边界
 
@@ -333,12 +345,16 @@ context deadline exceeded        -> 504 Gateway Timeout
 
 ## 测试策略
 
+
+
 ### Service 单元测试
 
 - 空文本、超长文本和合法文本。
 - 空 task ID。
 - Provider 错误原样传递。
 - Provider 返回 nil 或无效 Task 时拒绝结果。
+
+
 
 ### Provider Client 测试
 
@@ -352,6 +368,8 @@ context deadline exceeded        -> 504 Gateway Timeout
 - 请求取消能够传播到 Provider。
 - 错误信息不包含 Secret Key 或 Access Token。
 
+
+
 ### Handler 与 Router 测试
 
 - 创建接口返回 202。
@@ -359,6 +377,8 @@ context deadline exceeded        -> 504 Gateway Timeout
 - 400、502、503、504 错误映射正确。
 - 未登录用户返回 401。
 - Router 正确注册两个接口。
+
+
 
 ### 真实验收
 
@@ -376,6 +396,8 @@ context deadline exceeded        -> 504 Gateway Timeout
 
 ## 开发阶段
 
+
+
 ### 阶段 0：范围与接口确认
 
 状态：`completed`
@@ -383,6 +405,8 @@ context deadline exceeded        -> 504 Gateway Timeout
 - 确认百度长文本异步合成与模板功能一致。
 - 冻结两个 HTTP 接口、三个业务状态和固定合成参数。
 - 确认不使用 RabbitMQ、不新增 migration、不保存音频。
+
+
 
 ### 阶段 1：领域模型与 Service
 
@@ -395,19 +419,31 @@ context deadline exceeded        -> 504 Gateway Timeout
 - 创建任务会校验 UTF-8、空文本和 100000 字符上限，查询会校验 task ID。
 - Service 会拒绝空结果、未知状态和字段组合不合法的 Provider Task。
 - 单元测试覆盖合法状态、输入边界、错误传播、Context 取消和异常 Provider 结果。
-
 - 新增 `internal/tts`。
 - 定义 Task、Status、Provider 和业务错误。
 - 完成输入校验和 Service 单元测试。
 
+
+
 ### 阶段 2：百度 Provider Client
 
-状态：`pending`
+状态：`completed`
 
+完成记录：
+
+- 新增 `internal/platform/baidutts.Client`，实现 OAuth Token、创建任务和查询任务。
+- Access Token 在内存中缓存，接近过期时刷新，并发首次调用只执行一次 Token 请求。
+- 创建请求按官方协议发送 `text` 数组和冻结的语音参数。
+- Provider 的 Running、Success、Failure 已映射成领域 Task。
+- 所有请求支持 Context 取消、独立超时和 1 MiB 响应上限。
+- 错误不会包含 API Key、Secret Key 或 Access Token。
+- `httptest.Server` 测试覆盖协议字段、缓存并发、刷新、状态映射与异常响应。
 - 实现 OAuth Token 获取与内存缓存。
 - 实现创建和查询请求。
 - 实现响应大小限制、超时、取消和错误转换。
 - 使用 `httptest.Server` 补齐测试。
+
+
 
 ### 阶段 3：Handler 与 Router
 
@@ -417,6 +453,8 @@ context deadline exceeded        -> 504 Gateway Timeout
 - 完成 HTTP 错误映射。
 - 注册鉴权路由并补测试。
 
+
+
 ### 阶段 4：Bootstrap 与配置
 
 状态：`pending`
@@ -424,6 +462,8 @@ context deadline exceeded        -> 504 Gateway Timeout
 - 构造可选 TTS Feature。
 - 更新 `.env.example`、`.env.compose.example` 和 Compose。
 - 验证无凭据时不影响现有功能。
+
+
 
 ### 阶段 5：真实 E2E 与收尾
 
@@ -433,6 +473,8 @@ context deadline exceeded        -> 504 Gateway Timeout
 - 有凭据时完成真实创建、轮询和音频访问。
 - 更新 Backend README 的 TTS 使用说明。
 - 做一次模块级 code review 后提交。
+
+
 
 ## 官方参考
 

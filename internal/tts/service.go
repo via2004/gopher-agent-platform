@@ -12,8 +12,8 @@ type Service struct {
 	provider Provider
 }
 
-// NewService creates a TTS service. A nil provider keeps the optional feature
-// disabled and makes Create and Get return ErrNotConfigured.
+// NewService 创建 TTS Service。provider 为 nil 表示该可选功能未启用，
+// 此时 Create 和 Get 都会返回 ErrNotConfigured。
 func NewService(provider Provider) *Service {
 	return &Service{provider: provider}
 }
