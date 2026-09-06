@@ -13,4 +13,7 @@ var (
 var ErrNotConfigured = errors.New("tts is not configured")
 
 // 处理错误表示 Provider 返回了不符合领域约束的结果。
-var ErrInvalidProviderResult = errors.New("tts provider result is invalid")
+var (
+	ErrProviderUnavailable   = errors.New("tts provider is unavailable")
+	ErrInvalidProviderResult = errors.New("tts provider result is invalid")
+)

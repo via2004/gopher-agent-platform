@@ -11,6 +11,7 @@ import (
 const (
 	defaultRateLimiterPrefix   = "gopherai:rate_limit:chat:user"
 	defaultRAGUploadRatePrefix = "gopherai:rate_limit:rag_upload:user"
+	defaultTTSRatePrefix       = "gopherai:rate_limit:tts:user"
 )
 
 var allowScript = redis.NewScript(`
@@ -38,6 +39,11 @@ func NewRateLimiter(client *redis.Client, limit int64, window time.Duration) (*R
 // NewRAGUploadRateLimiter 创建使用独立 key prefix 的 RAG 上传限流器。
 func NewRAGUploadRateLimiter(client *redis.Client, limit int64, window time.Duration) (*RateLimiter, error) {
 	return newRateLimiter(client, limit, window, defaultRAGUploadRatePrefix)
+}
+
+// NewTTSRateLimiter 创建使用独立 key prefix 的 TTS 任务创建限流器。
+func NewTTSRateLimiter(client *redis.Client, limit int64, window time.Duration) (*RateLimiter, error) {
+	return newRateLimiter(client, limit, window, defaultTTSRatePrefix)
 }
 
 func newRateLimiter(client *redis.Client, limit int64, window time.Duration, prefix string) (*RateLimiter, error) {

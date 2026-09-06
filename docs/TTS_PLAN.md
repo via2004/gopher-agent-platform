@@ -89,6 +89,7 @@ HTTP API 第一版只让用户传入文本，不开放音色、格式、音调�
 - TTS 未配置时不影响 Backend 启动，对接口返回 503。
 - Handler、Service、Provider Client、配置和测试完整闭环。
 - Docker Compose 透传 TTS 配置。
+- 使用独立 Redis 配额限制用户创建 TTS 任务，不占用 Chat 或 RAG 配额。
 
 
 
@@ -277,6 +278,8 @@ BAIDU_TTS_API_KEY=
 BAIDU_TTS_SECRET_KEY=
 BAIDU_TTS_BASE_URL=https://aip.baidubce.com
 BAIDU_TTS_TIMEOUT_SECONDS=10
+TTS_RATE_LIMIT=5
+TTS_RATE_WINDOW_SECONDS=3600
 ```
 
 行为规则：
@@ -285,6 +288,7 @@ BAIDU_TTS_TIMEOUT_SECONDS=10
 - 只配置其中一个：启动失败，提示配置不完整。
 - 两者都配置：初始化百度 TTS Client。
 - Base URL 主要用于测试和兼容代理，默认使用百度官方地址。
+- TTS 限流只作用于创建任务接口；查询轮询不消耗创建额度。
 
 
 
@@ -447,7 +451,15 @@ context deadline exceeded        -> 504 Gateway Timeout
 
 ### 阶段 3：Handler 与 Router
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 新增创建与查询 TTS 任务的 Handler，并注册到 JWT 鉴权路由组。
+- 创建接口限制 1 MiB JSON 请求体，成功返回 `202 Accepted`。
+- 查询接口稳定返回 `audio_url` 和 `error_code`，未产生的字段为 `null`。
+- 业务输入、未配置、超时、Provider 和内部错误已统一映射为 HTTP 错误。
+- Handler 和 Router 测试覆盖鉴权、请求解析、三种状态、错误映射和 nil 结果。
 
 - 实现创建和查询 Handler。
 - 完成 HTTP 错误映射。

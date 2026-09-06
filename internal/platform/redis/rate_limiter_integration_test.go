@@ -74,7 +74,7 @@ func TestRateLimiterSeparatesUsers(t *testing.T) {
 	}
 }
 
-func TestChatAndRAGUploadRateLimitersUseIndependentKeys(t *testing.T) {
+func TestFeatureRateLimitersUseIndependentKeys(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	err := client.Ping(ctx).Err()
@@ -83,7 +83,11 @@ func TestChatAndRAGUploadRateLimitersUseIndependentKeys(t *testing.T) {
 		_ = client.Close()
 		t.Skipf("Redis/Valkey is unavailable: %v", err)
 	}
-	keys := []string{defaultRateLimiterPrefix + ":42", defaultRAGUploadRatePrefix + ":42"}
+	keys := []string{
+		defaultRateLimiterPrefix + ":42",
+		defaultRAGUploadRatePrefix + ":42",
+		defaultTTSRatePrefix + ":42",
+	}
 	_ = client.Del(context.Background(), keys...).Err()
 	t.Cleanup(func() {
 		_ = client.Del(context.Background(), keys...).Err()
@@ -98,17 +102,27 @@ func TestChatAndRAGUploadRateLimitersUseIndependentKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ttsLimiter, err := NewTTSRateLimiter(client, 1, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if allowed, _, err := chatLimiter.Allow(context.Background(), 42); err != nil || !allowed {
 		t.Fatalf("chat Allow() = %v, %v", allowed, err)
 	}
 	if allowed, _, err := ragLimiter.Allow(context.Background(), 42); err != nil || !allowed {
 		t.Fatalf("RAG Allow() = %v, %v; chat count must not consume RAG quota", allowed, err)
 	}
+	if allowed, _, err := ttsLimiter.Allow(context.Background(), 42); err != nil || !allowed {
+		t.Fatalf("TTS Allow() = %v, %v; other counts must not consume TTS quota", allowed, err)
+	}
 	if allowed, _, err := chatLimiter.Allow(context.Background(), 42); err != nil || allowed {
 		t.Fatalf("second chat Allow() = %v, %v, want denied", allowed, err)
 	}
 	if allowed, _, err := ragLimiter.Allow(context.Background(), 42); err != nil || allowed {
 		t.Fatalf("second RAG Allow() = %v, %v, want denied", allowed, err)
+	}
+	if allowed, _, err := ttsLimiter.Allow(context.Background(), 42); err != nil || allowed {
+		t.Fatalf("second TTS Allow() = %v, %v, want denied", allowed, err)
 	}
 }
 

@@ -16,6 +16,7 @@ type RouterHandlers struct {
 	ChatJobs      *ChatJobHandler
 	Images        *ImageHandler
 	RAG           *RAGHandler
+	TTS           *TTSHandler
 }
 
 // RouterMiddleware 汇总 Router 使用的认证与业务限流依赖。
@@ -23,6 +24,7 @@ type RouterMiddleware struct {
 	Tokens           TokenVerifier
 	ChatLimiter      RateLimiter
 	RAGUploadLimiter RateLimiter
+	TTSLimiter       RateLimiter
 }
 
 func NewRouter(
@@ -66,6 +68,7 @@ func registerAuthenticatedRoutes(group *gin.RouterGroup, handlers RouterHandlers
 
 	chatRateLimit := RateLimitMiddleware(middleware.ChatLimiter)
 	ragUploadRateLimit := RateLimitMiddleware(middleware.RAGUploadLimiter)
+	ttsRateLimit := RateLimitMiddleware(middleware.TTSLimiter)
 
 	group.POST("/conversations/:id/chat", chatRateLimit, handlers.Chat.Chat)
 	group.POST("/conversations/:id/chat/stream", chatRateLimit, handlers.Chat.ChatStreaming)
@@ -74,4 +77,6 @@ func registerAuthenticatedRoutes(group *gin.RouterGroup, handlers RouterHandlers
 
 	group.POST("/images/recognitions", handlers.Images.Recognize)
 	group.POST("/rag/documents", ragUploadRateLimit, handlers.RAG.Upload)
+	group.POST("/tts/tasks", ttsRateLimit, handlers.TTS.Create)
+	group.GET("/tts/tasks/:id", handlers.TTS.Get)
 }

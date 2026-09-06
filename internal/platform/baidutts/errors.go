@@ -1,6 +1,11 @@
 package baidutts
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+
+	"gopherai/internal/tts"
+)
 
 // 配置错误在发起任何 Provider 请求之前返回。
 var (
@@ -11,8 +16,8 @@ var (
 
 // Provider 错误描述百度 HTTP 调用边界发生的失败。
 var (
-	ErrTokenFailed      = errors.New("baidu tts token request failed")
-	ErrProviderFailed   = errors.New("baidu tts provider request failed")
-	ErrResponseTooLarge = errors.New("baidu tts provider response is too large")
-	ErrResponseInvalid  = errors.New("baidu tts provider response is invalid")
+	ErrTokenFailed      = fmt.Errorf("%w: baidu token request failed", tts.ErrProviderUnavailable)
+	ErrProviderFailed   = fmt.Errorf("%w: baidu provider request failed", tts.ErrProviderUnavailable)
+	ErrResponseTooLarge = fmt.Errorf("%w: baidu response is too large", tts.ErrInvalidProviderResult)
+	ErrResponseInvalid  = fmt.Errorf("%w: baidu response is invalid", tts.ErrInvalidProviderResult)
 )
