@@ -254,7 +254,7 @@ Redis 原子保存验证码和冷却
 -> 失败：尽力删除本次验证码和冷却标记
 ```
 
-先保存再发送，能够保证用户收到邮件时验证码已经可用。SMTP 失败时执行补偿删除，使用户可以重新发送。
+先保存再发送，能够保证用户收到邮件时验证码已经可用。SMTP 失败时执行补偿删除，使用户可以重新发送。补偿删除会同时比较验证码，只删除本次发送保存的旧值，避免慢请求误删后来覆盖的新验证码。
 
 如果补偿删除也失败，请求仍返回发送失败；Redis 中的验证码会在 TTL 后自动清理。这是可接受的短期不一致，不引入事务、消息队列或工作流引擎。
 
@@ -326,7 +326,7 @@ type EmailVerifier interface {
 type CodeStore interface {
     Save(ctx context.Context, email, code string, ttl, cooldown time.Duration) error
     VerifyAndConsume(ctx context.Context, email, code string, maxAttempts int) error
-    Delete(ctx context.Context, email string) error
+    Delete(ctx context.Context, email, code string) error
 }
 
 type Sender interface {
@@ -469,7 +469,7 @@ Redis 或 SMTP 暂时不可用   -> 503 Service Unavailable
 - 生成的验证码恰好为 6 位数字。
 - 非法邮箱在 Redis 和 SMTP 调用前被拒绝。
 - 保存成功后才调用 SMTP。
-- SMTP 失败时执行 Redis 补偿删除。
+- SMTP 失败时按邮箱和验证码执行 Redis 条件补偿删除。
 - Context 取消能够阻止后续步骤。
 - 验证请求正确传递邮箱、验证码和最大尝试次数。
 - 未配置时 Send 和 Verify 都返回 503 对应错误。
@@ -524,7 +524,17 @@ Redis 或 SMTP 暂时不可用   -> 503 Service Unavailable
 
 ### 阶段 1：验证码领域 Service
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 新增 `internal/emailverification` 的 CodeStore、Sender、Config 和 Service。
+- 使用 `crypto/rand` 生成包含前导零的 6 位数字验证码。
+- Send 会规范化邮箱、先保存验证码再发送，SMTP 失败时使用独立清理 Context 按验证码补偿删除。
+- VerifyAndConsume 校验 6 位数字格式，并把最大尝试次数交给原子 Store 边界。
+- Store、Sender 和随机数错误已收敛成稳定领域错误，同时保留 Context 错误。
+- Store 与 Sender 同时为空表示功能未启用，只缺一个依赖则拒绝构造。
+- 单元测试覆盖配置、输入、正常调用、错误传播、失败补偿、禁用状态和 Context 取消。
 
 - 新增 `internal/emailverification`。
 - 定义 CodeStore、Sender、错误和配置。
