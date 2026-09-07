@@ -469,7 +469,17 @@ context deadline exceeded        -> 504 Gateway Timeout
 
 ### 阶段 4：Bootstrap 与配置
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 新增可选 `ttsFeature`，统一组装 Provider、Service、Handler 和 Redis Limiter。
+- API Key 与 Secret Key 都为空时禁用 TTS，但 Backend 保持可启动。
+- 只配置一个百度凭据时启动失败，避免以错误配置运行。
+- 完整凭据会创建百度 TTS Client，并读取 Base URL 与请求超时。
+- 本地和 Compose 配置示例已增加百度凭据、超时和 TTS 限流参数。
+- `compose.yaml` 已通过现有 `env_file: .env.compose` 向 Backend 透传这些配置。
+- 未设置 TTS 限流配置时默认每个用户每小时最多创建 5 个任务。
 
 - 构造可选 TTS Feature。
 - 更新 `.env.example`、`.env.compose.example` 和 Compose。
@@ -479,7 +489,16 @@ context deadline exceeded        -> 504 Gateway Timeout
 
 ### 阶段 5：真实 E2E 与收尾
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 使用真实百度凭据成功获取 OAuth Access Token，凭据具备语音合成权限。
+- 真实创建接口返回 `Created`；Client 已兼容 `Created` 和官方示例中的 `Running`，统一映射为 `running`。
+- Backend 创建接口返回 `202 Accepted`，查询从 `running` 进入 `succeeded`。
+- 成功响应包含音频 URL，实际下载返回 18909 字节的 16 kHz 单声道 MP3。
+- `go test ./...`、`go vet ./...`、竞态测试和 `git diff --check` 通过。
+- Backend README 已增加 TTS 配置和接口使用说明。
 
 - 运行 `go test ./...` 和 `go vet ./...`。
 - 有凭据时完成真实创建、轮询和音频访问。

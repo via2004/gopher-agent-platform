@@ -12,9 +12,11 @@ import (
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	redisclient "github.com/redis/go-redis/v9"
 
 	"gopherai/internal/agent"
 	"gopherai/internal/llm"
+	baiduttsplatform "gopherai/internal/platform/baidutts"
 	mcpplatform "gopherai/internal/platform/mcp"
 	openaiplatform "gopherai/internal/platform/openai"
 	rabbitmqplatform "gopherai/internal/platform/rabbitmq"
@@ -36,6 +38,15 @@ var embeddingEnvironmentNames = []string{
 	"OPENAI_EMBEDDING_BASE_URL",
 	"OPENAI_EMBEDDING_MODEL",
 	"OPENAI_EMBEDDING_REQUIRES_AUTH",
+}
+
+var ttsEnvironmentNames = []string{
+	"BAIDU_TTS_API_KEY",
+	"BAIDU_TTS_SECRET_KEY",
+	"BAIDU_TTS_BASE_URL",
+	"BAIDU_TTS_TIMEOUT_SECONDS",
+	"TTS_RATE_LIMIT",
+	"TTS_RATE_WINDOW_SECONDS",
 }
 
 func TestLoadEnvironmentAllowsMissingFile(t *testing.T) {
@@ -222,6 +233,17 @@ func TestPositiveEnvInt64(t *testing.T) {
 	}
 }
 
+func TestPositiveEnvInt64OrDefault(t *testing.T) {
+	t.Setenv("TEST_OPTIONAL_POSITIVE_INT", "")
+	if got, err := positiveEnvInt64OrDefault("TEST_OPTIONAL_POSITIVE_INT", 5); err != nil || got != 5 {
+		t.Fatalf("default value = %d, %v; want 5", got, err)
+	}
+	t.Setenv("TEST_OPTIONAL_POSITIVE_INT", " 7 ")
+	if got, err := positiveEnvInt64OrDefault("TEST_OPTIONAL_POSITIVE_INT", 5); err != nil || got != 7 {
+		t.Fatalf("configured value = %d, %v; want 7", got, err)
+	}
+}
+
 func TestPositiveDurationEnvOrDefault(t *testing.T) {
 	t.Setenv("TEST_DURATION_SECONDS", "")
 	if got, err := positiveDurationEnvOrDefault("TEST_DURATION_SECONDS", 3*time.Second); err != nil || got != 3*time.Second {
@@ -390,6 +412,132 @@ func TestEmbeddingConfigRejectsInvalidAuthSetting(t *testing.T) {
 	}
 }
 
+func TestBuildTTSProviderKeepsFeatureDisabledWithoutCredentials(t *testing.T) {
+	clearTTSEnvironment(t)
+	t.Setenv("BAIDU_TTS_BASE_URL", "://ignored-while-disabled")
+	t.Setenv("BAIDU_TTS_TIMEOUT_SECONDS", "invalid")
+
+	provider, err := buildTTSProvider()
+	if err != nil {
+		t.Fatalf("buildTTSProvider() error = %v", err)
+	}
+	if provider != nil {
+		t.Fatalf("buildTTSProvider() provider = %T, want nil", provider)
+	}
+}
+
+func TestBuildTTSProviderRejectsIncompleteCredentials(t *testing.T) {
+	tests := []struct {
+		name       string
+		apiKey     string
+		secretKey  string
+		missingEnv string
+	}{
+		{name: "missing API key", secretKey: "secret", missingEnv: "BAIDU_TTS_API_KEY"},
+		{name: "missing secret key", apiKey: "key", missingEnv: "BAIDU_TTS_SECRET_KEY"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clearTTSEnvironment(t)
+			t.Setenv("BAIDU_TTS_API_KEY", test.apiKey)
+			t.Setenv("BAIDU_TTS_SECRET_KEY", test.secretKey)
+			provider, err := buildTTSProvider()
+			if err == nil || !strings.Contains(err.Error(), test.missingEnv) {
+				t.Fatalf("buildTTSProvider() = %T, %v; want error naming %s", provider, err, test.missingEnv)
+			}
+			if provider != nil {
+				t.Fatalf("buildTTSProvider() provider = %T, want nil", provider)
+			}
+		})
+	}
+}
+
+func TestBuildTTSProviderBuildsConfiguredBaiduClient(t *testing.T) {
+	clearTTSEnvironment(t)
+	t.Setenv("BAIDU_TTS_API_KEY", "key")
+	t.Setenv("BAIDU_TTS_SECRET_KEY", "secret")
+	t.Setenv("BAIDU_TTS_BASE_URL", "https://tts.example.com")
+	t.Setenv("BAIDU_TTS_TIMEOUT_SECONDS", "7")
+
+	provider, err := buildTTSProvider()
+	if err != nil {
+		t.Fatalf("buildTTSProvider() error = %v", err)
+	}
+	if _, ok := provider.(*baiduttsplatform.Client); !ok {
+		t.Fatalf("buildTTSProvider() provider = %T, want *baidutts.Client", provider)
+	}
+}
+
+func TestBuildTTSProviderRejectsInvalidConfiguration(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout string
+		baseURL string
+		wantErr error
+	}{
+		{name: "invalid timeout", timeout: "invalid"},
+		{name: "invalid base URL", baseURL: "://bad", wantErr: baiduttsplatform.ErrInvalidBaseURL},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clearTTSEnvironment(t)
+			t.Setenv("BAIDU_TTS_API_KEY", "key")
+			t.Setenv("BAIDU_TTS_SECRET_KEY", "secret")
+			t.Setenv("BAIDU_TTS_TIMEOUT_SECONDS", test.timeout)
+			t.Setenv("BAIDU_TTS_BASE_URL", test.baseURL)
+			provider, err := buildTTSProvider()
+			if err == nil {
+				t.Fatalf("buildTTSProvider() provider = %T, error = nil", provider)
+			}
+			if test.wantErr != nil && !errors.Is(err, test.wantErr) {
+				t.Fatalf("buildTTSProvider() error = %v, want %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildTTSFeatureUsesDefaultAndConfiguredRateLimits(t *testing.T) {
+	tests := []struct {
+		name   string
+		limit  string
+		window string
+	}{
+		{name: "defaults"},
+		{name: "configured", limit: "7", window: "120"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clearTTSEnvironment(t)
+			t.Setenv("TTS_RATE_LIMIT", test.limit)
+			t.Setenv("TTS_RATE_WINDOW_SECONDS", test.window)
+			redisClient := redisclient.NewClient(&redisclient.Options{Addr: "127.0.0.1:6379"})
+			t.Cleanup(func() { _ = redisClient.Close() })
+
+			feature, err := buildTTSFeature(redisClient)
+			if err != nil {
+				t.Fatalf("buildTTSFeature() error = %v", err)
+			}
+			if feature == nil || feature.handler == nil || feature.limiter == nil {
+				t.Fatalf("buildTTSFeature() feature = %#v", feature)
+			}
+		})
+	}
+}
+
+func TestBuildTTSFeatureRejectsInvalidRateLimit(t *testing.T) {
+	clearTTSEnvironment(t)
+	t.Setenv("TTS_RATE_LIMIT", "0")
+	redisClient := redisclient.NewClient(&redisclient.Options{Addr: "127.0.0.1:6379"})
+	t.Cleanup(func() { _ = redisClient.Close() })
+
+	if _, err := buildTTSFeature(redisClient); err == nil || !strings.Contains(err.Error(), "TTS_RATE_LIMIT") {
+		t.Fatalf("buildTTSFeature() error = %v", err)
+	}
+}
+
 func TestHTTPAddress(t *testing.T) {
 	t.Setenv("HTTP_ADDR", "")
 	if got := httpAddress(); got != defaultHTTPAddr {
@@ -412,6 +560,13 @@ func clearLLMEnvironment(t *testing.T) {
 func clearEmbeddingEnvironment(t *testing.T) {
 	t.Helper()
 	for _, name := range embeddingEnvironmentNames {
+		t.Setenv(name, "")
+	}
+}
+
+func clearTTSEnvironment(t *testing.T) {
+	t.Helper()
+	for _, name := range ttsEnvironmentNames {
 		t.Setenv(name, "")
 	}
 }

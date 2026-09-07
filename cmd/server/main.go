@@ -92,6 +92,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	ttsFeature, err := buildTTSFeature(redisClient)
+	if err != nil {
+		return err
+	}
 	chatRateLimiter, err := buildRateLimiter(
 		redisClient,
 		"CHAT_RATE_LIMIT",
@@ -138,11 +142,13 @@ func run() error {
 			ChatJobs:      chatFeature.jobHandler,
 			Images:        imageFeature.handler,
 			RAG:           ragFeature.handler,
+			TTS:           ttsFeature.handler,
 		},
 		httpapi.RouterMiddleware{
 			Tokens:           tokenManager,
 			ChatLimiter:      chatRateLimiter,
 			RAGUploadLimiter: ragFeature.uploadLimiter,
+			TTSLimiter:       ttsFeature.limiter,
 		},
 	)
 

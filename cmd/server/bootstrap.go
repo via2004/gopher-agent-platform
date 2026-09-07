@@ -22,6 +22,7 @@ import (
 	"gopherai/internal/llm"
 	"gopherai/internal/message"
 	"gopherai/internal/modelcall"
+	baiduttsplatform "gopherai/internal/platform/baidutts"
 	filesystem "gopherai/internal/platform/filesystem"
 	mcpplatform "gopherai/internal/platform/mcp"
 	onnxplatform "gopherai/internal/platform/onnx"
@@ -30,15 +31,19 @@ import (
 	rabbitmqplatform "gopherai/internal/platform/rabbitmq"
 	redisplatform "gopherai/internal/platform/redis"
 	"gopherai/internal/rag"
+	"gopherai/internal/tts"
 )
 
 const (
-	dependencyPingTimeout        = 5 * time.Second
-	rabbitMQConnectAttempts      = 15
-	rabbitMQConnectRetryInterval = time.Second
-	defaultMCPCallTimeout        = 10 * time.Second
-	mcpConnectAttempts           = 15
-	mcpConnectRetryInterval      = time.Second
+	dependencyPingTimeout              = 5 * time.Second
+	rabbitMQConnectAttempts            = 15
+	rabbitMQConnectRetryInterval       = time.Second
+	defaultMCPCallTimeout              = 10 * time.Second
+	defaultBaiduTTSTimeout             = 10 * time.Second
+	defaultTTSRateLimit          int64 = 5
+	defaultTTSRateWindow               = time.Hour
+	mcpConnectAttempts                 = 15
+	mcpConnectRetryInterval            = time.Second
 )
 
 type rabbitMQConnector func(string) (*rabbitmqplatform.RabbitMQClient, error)
@@ -148,6 +153,11 @@ type ragFeature struct {
 	service       *rag.Service
 	handler       *httpapi.RAGHandler
 	uploadLimiter *redisplatform.RateLimiter
+}
+
+type ttsFeature struct {
+	handler *httpapi.TTSHandler
+	limiter *redisplatform.RateLimiter
 }
 
 type chatFeature struct {
@@ -278,6 +288,66 @@ func buildRAGFeature(client *redisclient.Client) (*ragFeature, error) {
 	}, nil
 }
 
+func buildTTSFeature(client *redisclient.Client) (*ttsFeature, error) {
+	provider, err := buildTTSProvider()
+	if err != nil {
+		return nil, err
+	}
+	limiter, err := buildTTSRateLimiter(client)
+	if err != nil {
+		return nil, err
+	}
+	service := tts.NewService(provider)
+	return &ttsFeature{
+		handler: httpapi.NewTTSHandler(service),
+		limiter: limiter,
+	}, nil
+}
+
+func buildTTSRateLimiter(client *redisclient.Client) (*redisplatform.RateLimiter, error) {
+	limit, err := positiveEnvInt64OrDefault("TTS_RATE_LIMIT", defaultTTSRateLimit)
+	if err != nil {
+		return nil, err
+	}
+	window, err := positiveDurationEnvOrDefault("TTS_RATE_WINDOW_SECONDS", defaultTTSRateWindow)
+	if err != nil {
+		return nil, err
+	}
+	limiter, err := redisplatform.NewTTSRateLimiter(client, limit, window)
+	if err != nil {
+		return nil, fmt.Errorf("new TTS rate limiter: %w", err)
+	}
+	return limiter, nil
+}
+
+func buildTTSProvider() (tts.Provider, error) {
+	apiKey := strings.TrimSpace(os.Getenv("BAIDU_TTS_API_KEY"))
+	secretKey := strings.TrimSpace(os.Getenv("BAIDU_TTS_SECRET_KEY"))
+	if apiKey == "" && secretKey == "" {
+		return nil, nil
+	}
+	if apiKey == "" {
+		return nil, errors.New("BAIDU_TTS_API_KEY is required when TTS is configured")
+	}
+	if secretKey == "" {
+		return nil, errors.New("BAIDU_TTS_SECRET_KEY is required when TTS is configured")
+	}
+	timeout, err := positiveDurationEnvOrDefault("BAIDU_TTS_TIMEOUT_SECONDS", defaultBaiduTTSTimeout)
+	if err != nil {
+		return nil, err
+	}
+	client, err := baiduttsplatform.NewClient(baiduttsplatform.Config{
+		APIKey:    apiKey,
+		SecretKey: secretKey,
+		BaseURL:   strings.TrimSpace(os.Getenv("BAIDU_TTS_BASE_URL")),
+		Timeout:   timeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("new Baidu TTS client: %w", err)
+	}
+	return client, nil
+}
+
 type rateLimiterFactory func(*redisclient.Client, int64, time.Duration) (*redisplatform.RateLimiter, error)
 
 func buildRateLimiter(client *redisclient.Client, limitEnv, windowEnv string, factory rateLimiterFactory) (*redisplatform.RateLimiter, error) {
@@ -305,6 +375,13 @@ func positiveEnvInt64(name string) (int64, error) {
 		return 0, fmt.Errorf("%s must be positive", name)
 	}
 	return value, nil
+}
+
+func positiveEnvInt64OrDefault(name string, fallback int64) (int64, error) {
+	if strings.TrimSpace(os.Getenv(name)) == "" {
+		return fallback, nil
+	}
+	return positiveEnvInt64(name)
 }
 
 func positiveDurationEnvOrDefault(name string, fallback time.Duration) (time.Duration, error) {

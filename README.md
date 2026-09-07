@@ -63,6 +63,27 @@ MCP_CALL_TIMEOUT_SECONDS=10
 怎么样？”验证天气工具，用 `/chat/stream` 验证增量输出，用 `/chat-jobs` 验证 RabbitMQ
 异步任务。
 
+## TTS 文本转语音
+
+TTS 是可选功能。需要在 `.env.compose` 中填写百度语音应用的凭据：
+
+```env
+BAIDU_TTS_API_KEY=
+BAIDU_TTS_SECRET_KEY=
+```
+
+两个值都为空时 Backend 仍可启动，但 TTS 接口返回 `503`；只配置一个值会被视为错误配置。
+创建与查询接口都需要 JWT：
+
+```text
+POST /api/v1/tts/tasks
+GET  /api/v1/tts/tasks/:id
+```
+
+创建接口只接受 `{"text":"..."}`，返回 `task_id`。客户端轮询查询接口，状态变成
+`succeeded` 后使用响应中的临时 `audio_url` 下载或播放 MP3。默认每个用户每小时最多
+创建 5 个任务，查询不消耗创建额度。
+
 重新构建 Backend 并启动：
 
 ```bash

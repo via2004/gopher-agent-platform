@@ -194,10 +194,15 @@ func (c *Client) Create(ctx context.Context, text string) (*tts.Task, error) {
 	if providerRejected(response.ErrorCode) {
 		return nil, ErrProviderFailed
 	}
-	if response.TaskID == "" || (response.TaskStatus != "" && response.TaskStatus != "Running") {
+	if response.TaskID == "" || !validCreateStatus(response.TaskStatus) {
 		return nil, ErrResponseInvalid
 	}
 	return &tts.Task{ID: response.TaskID, Status: tts.StatusRunning}, nil
+}
+
+func validCreateStatus(status string) bool {
+	// 官方示例使用 Running，实际接口也可能返回 Created；两者都表示任务已受理但尚未完成。
+	return status == "" || status == "Created" || status == "Running"
 }
 
 type queryRequest struct {

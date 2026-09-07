@@ -92,6 +92,24 @@ func TestClientCreateUsesBaiduProtocolAndCachesToken(t *testing.T) {
 	}
 }
 
+func TestClientCreateAcceptsProviderStartStatuses(t *testing.T) {
+	for _, status := range []string{"", "Created", "Running"} {
+		t.Run(status, func(t *testing.T) {
+			server := newStaticProviderServer(t, http.StatusOK,
+				fmt.Sprintf(`{"task_id":"task-1","task_status":%q}`, status))
+			defer server.Close()
+
+			task, err := newTestClient(t, server.URL).Create(context.Background(), "hello")
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if task.ID != "task-1" || task.Status != tts.StatusRunning {
+				t.Fatalf("Create() task = %#v", task)
+			}
+		})
+	}
+}
+
 func TestClientSerializesConcurrentTokenRefresh(t *testing.T) {
 	var tokenCalls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
