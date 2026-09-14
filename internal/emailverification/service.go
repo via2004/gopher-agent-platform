@@ -41,7 +41,7 @@ type Service struct {
 	codes          CodeStore
 	sender         Sender
 	codeTTL        time.Duration
-	resendInterval time.Duration
+	resendInterval time.Duration // 发送邮件的最短间隔
 	maxAttempts    int
 	generateCode   codeGenerator
 }
@@ -58,7 +58,8 @@ func NewService(codes CodeStore, sender Sender, config Config) (*Service, error)
 	if sender == nil {
 		return nil, ErrInvalidSender
 	}
-	if config.CodeTTL <= 0 || config.ResendInterval <= 0 || config.MaxAttempts <= 0 {
+	if config.CodeTTL <= 0 || config.ResendInterval <= 0 ||
+		config.ResendInterval > config.CodeTTL || config.MaxAttempts <= 0 {
 		return nil, ErrInvalidConfig
 	}
 
@@ -164,7 +165,7 @@ func validCode(code string) bool {
 
 func generateNumericCode() (string, error) {
 	// 操作系统提供的密码学安全随机源。它比 math/rand 更难预测，适合验证码、Token 等安全场景。
-	value, err := cryptorand.Int(cryptorand.Reader, big.NewInt(codeRange)) // [1, codeRange]
+	value, err := cryptorand.Int(cryptorand.Reader, big.NewInt(codeRange)) // [0, codeRange)
 	if err != nil {
 		return "", err
 	}

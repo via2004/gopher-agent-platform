@@ -207,6 +207,8 @@ gopherai:email_verification:attempts:<email_sha256>
 
 验证码本身仍作为短期 Redis Value 保存，TTL 到期后自动清理。Redis 只允许在内部网络访问，不记录验证码内容。
 
+发送冷却必须小于或等于验证码有效期，避免验证码已经失效但用户仍不能重新发送。
+
 ### 保存验证码
 
 Redis Repository 提供一个原子保存操作：
@@ -543,7 +545,16 @@ Redis 或 SMTP 暂时不可用   -> 503 Service Unavailable
 
 ### 阶段 2：Redis CodeStore
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 新增 Redis EmailVerificationCodeStore，并用 SHA-256 邮箱摘要构造三个隔离 Key。
+- Save Lua 脚本原子检查冷却、保存验证码和冷却 TTL，并清空旧尝试次数。
+- VerifyAndConsume Lua 脚本原子校验、累计错误次数、同步剩余 TTL，并在成功或达到上限时删除验证码。
+- Delete Lua 脚本只清理仍与指定验证码匹配的状态，避免慢 SMTP 请求误删新验证码。
+- 直接调用 Repository 时也会校验邮箱、6 位数字、TTL、冷却和最大尝试次数。
+- Integration 测试覆盖并发保存、单次消费、错误上限、TTL、条件补偿和邮箱隔离。
 
 - 实现 SHA-256 邮箱 Key。
 - 使用 Lua 原子保存、冷却、尝试计数和消费。

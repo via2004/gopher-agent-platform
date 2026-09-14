@@ -110,6 +110,7 @@ func TestNewServiceValidatesDependenciesAndConfig(t *testing.T) {
 		{ResendInterval: time.Minute, MaxAttempts: 5},
 		{CodeTTL: time.Minute, MaxAttempts: 5},
 		{CodeTTL: time.Minute, ResendInterval: time.Minute},
+		{CodeTTL: time.Minute, ResendInterval: 2 * time.Minute, MaxAttempts: 5},
 	}
 	for _, config := range invalidConfigs {
 		if _, err := NewService(store, sender, config); !errors.Is(err, ErrInvalidConfig) {
