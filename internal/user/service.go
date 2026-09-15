@@ -12,11 +12,17 @@ import (
 const dummyBcryptHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 
 type Service struct {
-	users UserRepository
+	users    UserRepository
+	verifier EmailVerifier
 }
 
 func NewService(users UserRepository) *Service {
 	return &Service{users: users}
+}
+
+// NewServiceWithEmailVerifier 创建注册时必须验证邮箱验证码的用户服务。
+func NewServiceWithEmailVerifier(users UserRepository, verifier EmailVerifier) *Service {
+	return &Service{users: users, verifier: verifier}
 }
 
 func valid(email string) bool {
@@ -25,7 +31,7 @@ func valid(email string) bool {
 	return err == nil && addr.Address == email
 }
 
-func (s *Service) Register(ctx context.Context, email string, password string) (*User, error) {
+func (s *Service) Register(ctx context.Context, email, password, verificationCode string) (*User, error) {
 	if email == "" {
 		return nil, ErrInvalidEmail
 	}
@@ -46,6 +52,11 @@ func (s *Service) Register(ctx context.Context, email string, password string) (
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrPasswordHash, err)
+	}
+	if s.verifier != nil {
+		if err := s.verifier.VerifyAndConsume(ctx, email, verificationCode); err != nil {
+			return nil, err
+		}
 	}
 	user := &User{
 		Email:        email,

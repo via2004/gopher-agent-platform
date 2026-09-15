@@ -8,15 +8,16 @@ import (
 
 // RouterHandlers 汇总 HTTP Router 直接注册的业务 Handler。
 type RouterHandlers struct {
-	Users         *UserHandler
-	Conversations *ConversationHandler
-	Messages      *MessageHandler
-	Chat          *ChatHandler
-	Health        *HealthHandler
-	ChatJobs      *ChatJobHandler
-	Images        *ImageHandler
-	RAG           *RAGHandler
-	TTS           *TTSHandler
+	Users             *UserHandler
+	Conversations     *ConversationHandler
+	Messages          *MessageHandler
+	Chat              *ChatHandler
+	Health            *HealthHandler
+	ChatJobs          *ChatJobHandler
+	Images            *ImageHandler
+	RAG               *RAGHandler
+	TTS               *TTSHandler
+	EmailVerification *EmailVerificationHandler
 }
 
 // RouterMiddleware 汇总 Router 使用的认证与业务限流依赖。
@@ -54,6 +55,7 @@ func registerPublicRoutes(router *gin.Engine, handlers RouterHandlers) {
 	router.GET("/readyz", handlers.Health.Ready)
 	router.POST("/api/v1/auth/register", handlers.Users.Register)
 	router.POST("/api/v1/auth/login", handlers.Users.Login)
+	router.POST("/api/v1/auth/email-verification-codes", handlers.EmailVerification.Send)
 }
 
 func registerAuthenticatedRoutes(group *gin.RouterGroup, handlers RouterHandlers, middleware RouterMiddleware) {

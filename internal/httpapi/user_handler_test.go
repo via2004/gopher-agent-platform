@@ -13,29 +13,32 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"gopherai/internal/emailverification"
 	"gopherai/internal/user"
 )
 
 type fakeUserRegistrar struct {
-	registerCalls int
-	loginCalls    int
-	ctx           context.Context
-	email         string
-	password      string
-	registered    *user.User
-	loggedIn      *user.User
-	err           error
-	getByIDCalls  int
-	queriedUserID uint64
-	queriedUser   *user.User
-	queryErr      error
+	registerCalls    int
+	loginCalls       int
+	ctx              context.Context
+	email            string
+	password         string
+	verificationCode string
+	registered       *user.User
+	loggedIn         *user.User
+	err              error
+	getByIDCalls     int
+	queriedUserID    uint64
+	queriedUser      *user.User
+	queryErr         error
 }
 
-func (f *fakeUserRegistrar) Register(ctx context.Context, email, password string) (*user.User, error) {
+func (f *fakeUserRegistrar) Register(ctx context.Context, email, password, verificationCode string) (*user.User, error) {
 	f.registerCalls++
 	f.ctx = ctx
 	f.email = email
 	f.password = password
+	f.verificationCode = verificationCode
 	return f.registered, f.err
 }
 
@@ -128,6 +131,9 @@ func TestUserHandlerRegister(t *testing.T) {
 	if registrar.password != "password123" {
 		t.Errorf("Register() password = %q, want %q", registrar.password, "password123")
 	}
+	if registrar.verificationCode != "" {
+		t.Errorf("Register() verification code = %q, want empty", registrar.verificationCode)
+	}
 
 	var response registerResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
@@ -168,6 +174,11 @@ func TestUserHandlerRegisterMapsServiceErrors(t *testing.T) {
 		{name: "invalid password", err: user.ErrInvalidPassword, wantStatus: http.StatusBadRequest, wantCode: "EMAIL_OR_PASSWORD_INVALID"},
 		{name: "duplicate email", err: user.ErrEmailAlreadyExists, wantStatus: http.StatusConflict, wantCode: "EMAIL_ALREADY_EXISTS"},
 		{name: "password hash failure", err: user.ErrPasswordHash, wantStatus: http.StatusInternalServerError, wantCode: "INTERNAL_SERVER_ERROR"},
+		{name: "invalid verification code", err: emailverification.ErrInvalidCode, wantStatus: http.StatusBadRequest, wantCode: "INVALID_VERIFICATION_CODE"},
+		{name: "expired verification code", err: emailverification.ErrCodeInvalidOrExpired, wantStatus: http.StatusBadRequest, wantCode: "INVALID_VERIFICATION_CODE"},
+		{name: "too many verification attempts", err: emailverification.ErrTooManyAttempts, wantStatus: http.StatusBadRequest, wantCode: "INVALID_VERIFICATION_CODE"},
+		{name: "verification unavailable", err: emailverification.ErrStoreFailed, wantStatus: http.StatusServiceUnavailable, wantCode: "SERVICE_UNAVAILABLE"},
+		{name: "verification timeout", err: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantCode: "TIMEOUT"},
 		{name: "unknown failure", err: errors.New("database unavailable"), wantStatus: http.StatusInternalServerError, wantCode: "INTERNAL_SERVER_ERROR"},
 	}
 
@@ -188,6 +199,24 @@ func TestUserHandlerRegisterMapsServiceErrors(t *testing.T) {
 				t.Fatalf("Register() calls = %d, want 1", registrar.registerCalls)
 			}
 		})
+	}
+}
+
+func TestUserHandlerRegisterPassesVerificationCode(t *testing.T) {
+	registrar := &fakeUserRegistrar{registered: &user.User{ID: 42, Email: "user@example.com"}}
+	router := newUserHandlerTestRouter(registrar)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
+		strings.NewReader(`{"email":"user@example.com","password":"password123","verification_code":"123456"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if registrar.verificationCode != "123456" {
+		t.Fatalf("Register() verification code = %q, want 123456", registrar.verificationCode)
 	}
 }
 

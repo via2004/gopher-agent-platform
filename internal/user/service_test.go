@@ -25,6 +25,26 @@ type fakeUserRepository struct {
 	getByIDErr      error
 }
 
+type fakeEmailVerifier struct {
+	calls       int
+	ctx         context.Context
+	email       string
+	code        string
+	err         error
+	createCalls *int
+}
+
+func (f *fakeEmailVerifier) VerifyAndConsume(ctx context.Context, email, code string) error {
+	f.calls++
+	f.ctx = ctx
+	f.email = email
+	f.code = code
+	if f.createCalls != nil && *f.createCalls != 0 {
+		return errors.New("user was created before verification")
+	}
+	return f.err
+}
+
 func (r *fakeUserRepository) Create(ctx context.Context, user *User) error {
 	r.createCalls++
 	r.createdUser = user
@@ -52,7 +72,7 @@ func TestServiceRegister(t *testing.T) {
 	type contextKey string
 	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
 
-	got, err := service.Register(ctx, " User@Example.COM ", "password123")
+	got, err := service.Register(ctx, " User@Example.COM ", "password123", "")
 	if err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
@@ -100,7 +120,7 @@ func TestServiceRegisterRejectsInvalidInput(t *testing.T) {
 			repo := &fakeUserRepository{}
 			service := NewService(repo)
 
-			got, err := service.Register(context.Background(), tt.email, tt.password)
+			got, err := service.Register(context.Background(), tt.email, tt.password, "")
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Register() error = %v, want %v", err, tt.wantErr)
 			}
@@ -119,7 +139,7 @@ func TestServiceRegisterReturnsRepositoryError(t *testing.T) {
 	repo := &fakeUserRepository{err: repoErr}
 	service := NewService(repo)
 
-	got, err := service.Register(context.Background(), "user@example.com", "password123")
+	got, err := service.Register(context.Background(), "user@example.com", "password123", "")
 	if !errors.Is(err, repoErr) {
 		t.Fatalf("Register() error = %v, want %v", err, repoErr)
 	}
@@ -128,6 +148,64 @@ func TestServiceRegisterReturnsRepositoryError(t *testing.T) {
 	}
 	if repo.createCalls != 1 {
 		t.Fatalf("repository Create() calls = %d, want 1", repo.createCalls)
+	}
+}
+
+func TestServiceRegisterVerifiesEmailBeforeCreatingUser(t *testing.T) {
+	repo := &fakeUserRepository{}
+	verifier := &fakeEmailVerifier{createCalls: &repo.createCalls}
+	service := NewServiceWithEmailVerifier(repo, verifier)
+	type contextKey string
+	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
+
+	got, err := service.Register(ctx, " User@Example.COM ", "password123", " 123456 ")
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if got == nil || repo.createCalls != 1 {
+		t.Fatalf("Register() user = %#v, Create() calls = %d", got, repo.createCalls)
+	}
+	if verifier.calls != 1 || verifier.email != "user@example.com" || verifier.code != " 123456 " || verifier.ctx != ctx {
+		t.Fatalf("VerifyAndConsume() = %d calls with email %q and code %q", verifier.calls, verifier.email, verifier.code)
+	}
+}
+
+func TestServiceRegisterStopsWhenEmailVerificationFails(t *testing.T) {
+	wantErr := errors.New("verification failed")
+	repo := &fakeUserRepository{}
+	verifier := &fakeEmailVerifier{err: wantErr, createCalls: &repo.createCalls}
+	service := NewServiceWithEmailVerifier(repo, verifier)
+
+	got, err := service.Register(context.Background(), "user@example.com", "password123", "123456")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Register() error = %v, want %v", err, wantErr)
+	}
+	if got != nil || repo.createCalls != 0 || verifier.calls != 1 {
+		t.Fatalf("Register() user = %#v, Create calls = %d, Verify calls = %d", got, repo.createCalls, verifier.calls)
+	}
+}
+
+func TestServiceRegisterValidatesInputBeforeEmailVerification(t *testing.T) {
+	repo := &fakeUserRepository{}
+	verifier := &fakeEmailVerifier{}
+	service := NewServiceWithEmailVerifier(repo, verifier)
+
+	if _, err := service.Register(context.Background(), "invalid", "password123", "123456"); !errors.Is(err, ErrInvalidEmail) {
+		t.Fatalf("Register() error = %v, want %v", err, ErrInvalidEmail)
+	}
+	if _, err := service.Register(context.Background(), "user@example.com", "short", "123456"); !errors.Is(err, ErrInvalidPassword) {
+		t.Fatalf("Register() error = %v, want %v", err, ErrInvalidPassword)
+	}
+	if verifier.calls != 0 || repo.createCalls != 0 {
+		t.Fatalf("calls = Verify %d, Create %d; want both 0", verifier.calls, repo.createCalls)
+	}
+}
+
+func TestServiceRegisterWithoutVerifierKeepsExistingBehavior(t *testing.T) {
+	repo := &fakeUserRepository{}
+	got, err := NewService(repo).Register(context.Background(), "user@example.com", "password123", "not-checked")
+	if err != nil || got == nil || repo.createCalls != 1 {
+		t.Fatalf("Register() = %#v, %v; Create calls = %d", got, err, repo.createCalls)
 	}
 }
 

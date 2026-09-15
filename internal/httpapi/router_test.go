@@ -430,7 +430,7 @@ func TestNewRouterServesStreamingChatForAuthenticatedUser(t *testing.T) {
 
 type panicUserRegistrar struct{}
 
-func (panicUserRegistrar) Register(context.Context, string, string) (*user.User, error) {
+func (panicUserRegistrar) Register(context.Context, string, string, string) (*user.User, error) {
 	panic("register panic")
 }
 

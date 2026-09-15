@@ -581,7 +581,16 @@ Redis 或 SMTP 暂时不可用   -> 503 Service Unavailable
 
 ### 阶段 4：注册与 HTTP 接入
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 注册请求新增 `verification_code`，并显式传入 user.Service。
+- user.Service 新增启用邮箱验证的构造方式；默认构造仍保持原有直接注册行为。
+- 启用时先校验输入并计算密码哈希，再验证并消费验证码，最后写入用户 Repository。
+- 新增公开的发送验证码 Handler 与 `/api/v1/auth/email-verification-codes` 路由。
+- 验证码输入、过期、尝试上限、Redis/SMTP 不可用和超时已映射成稳定 HTTP 错误。
+- User、Handler 和 Router 测试覆盖关闭/开启行为、调用顺序、错误映射、请求大小与公开访问。
 
 - 注册请求增加 `verification_code`。
 - `user.Service` 接入可选 EmailVerifier。

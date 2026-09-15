@@ -8,3 +8,7 @@ type UserRepository interface {
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	GetByID(ctx context.Context, userID uint64) (*User, error)
 }
+
+type EmailVerifier interface {
+	VerifyAndConsume(ctx context.Context, email, code string) error
+}

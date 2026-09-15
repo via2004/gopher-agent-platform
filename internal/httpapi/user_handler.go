@@ -3,10 +3,13 @@ package httpapi
 import (
 	"context"
 	"errors"
-	"github.com/gin-gonic/gin"
-	"gopherai/internal/user"
 	"net/http"
 	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"gopherai/internal/emailverification"
+	"gopherai/internal/user"
 )
 
 type UserHandler struct {
@@ -15,8 +18,9 @@ type UserHandler struct {
 }
 
 type registerAndLoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email            string `json:"email"`
+	Password         string `json:"password"`
+	VerificationCode string `json:"verification_code"`
 }
 
 func newRegisterAndLoginRequest() *registerAndLoginRequest {
@@ -46,7 +50,7 @@ type errorResponse struct {
 }
 
 type UserService interface {
-	Register(ctx context.Context, email, password string) (*user.User, error)
+	Register(ctx context.Context, email, password, verificationCode string) (*user.User, error)
 	Login(ctx context.Context, email, password string) (*user.User, error)
 	GetByID(ctx context.Context, userID uint64) (*user.User, error)
 }
@@ -71,7 +75,12 @@ func (h *UserHandler) Register(c *gin.Context) {
 		return
 	}
 
-	returnUser, err := h.users.Register(c.Request.Context(), userRequest.Email, userRequest.Password)
+	returnUser, err := h.users.Register(
+		c.Request.Context(),
+		userRequest.Email,
+		userRequest.Password,
+		userRequest.VerificationCode,
+	)
 	switch {
 	case errors.Is(err, user.ErrInvalidEmail), errors.Is(err, user.ErrInvalidPassword):
 		c.JSON(http.StatusBadRequest, &errorResponse{
@@ -84,6 +93,21 @@ func (h *UserHandler) Register(c *gin.Context) {
 	case errors.Is(err, user.ErrEmailAlreadyExists):
 		c.JSON(http.StatusConflict, &errorResponse{
 			Code: "EMAIL_ALREADY_EXISTS", Message: "email already registered",
+		})
+	case errors.Is(err, emailverification.ErrInvalidCode),
+		errors.Is(err, emailverification.ErrCodeInvalidOrExpired),
+		errors.Is(err, emailverification.ErrTooManyAttempts):
+		c.JSON(http.StatusBadRequest, &errorResponse{
+			Code: "INVALID_VERIFICATION_CODE", Message: "verification code is invalid or expired",
+		})
+	case errors.Is(err, emailverification.ErrNotConfigured),
+		errors.Is(err, emailverification.ErrStoreFailed):
+		c.JSON(http.StatusServiceUnavailable, &errorResponse{
+			Code: "SERVICE_UNAVAILABLE", Message: "service is unavailable",
+		})
+	case errors.Is(err, context.DeadlineExceeded):
+		c.JSON(http.StatusGatewayTimeout, &errorResponse{
+			Code: "TIMEOUT", Message: "request timed out",
 		})
 	case err != nil:
 		c.JSON(http.StatusInternalServerError, &errorResponse{
