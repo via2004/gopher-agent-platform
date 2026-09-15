@@ -369,7 +369,7 @@ SMTP_FROM_NAME=GopherAI
 Subject: GopherAI 邮箱验证码
 
 你的验证码是：482915
-验证码将在 10 分钟后失效，请勿将验证码告诉他人。
+请在有效期内尽快使用，并且不要将验证码告诉他人。
 ```
 
 ## 配置
@@ -562,7 +562,17 @@ Redis 或 SMTP 暂时不可用   -> 503 Service Unavailable
 
 ### 阶段 3：SMTP Sender
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 引入 `github.com/wneessen/go-mail v0.8.1`，新增 SMTP Sender。
+- SMTP Client 固定要求 STARTTLS，启用鉴权自动发现并配置连接超时。
+- Sender 构造固定主题、From Name 和纯文本验证码正文。
+- 每次发送同时受调用方 Context 和独立 SMTP 超时控制。
+- 配置、收件人和六位验证码会在网络调用前校验。
+- 普通投递错误收敛为稳定错误，不暴露 SMTP 密码、验证码或底层错误文本。
+- 单元测试覆盖 TLS 配置、邮件内容、输入、取消、超时和敏感信息保护。
 
 - 引入并固定 `github.com/wneessen/go-mail` 版本。
 - 实现 STARTTLS SMTP Sender。

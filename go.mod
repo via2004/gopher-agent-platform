@@ -12,6 +12,7 @@ require (
 	github.com/openai/openai-go/v3 v3.45.0
 	github.com/rabbitmq/amqp091-go v1.13.0
 	github.com/redis/go-redis/v9 v9.22.0
+	github.com/wneessen/go-mail v0.8.1
 	github.com/yalue/onnxruntime_go v1.22.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/image v0.45.0

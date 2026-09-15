@@ -13,7 +13,11 @@ import (
 	"gopherai/internal/emailverification"
 )
 
-const defaultEmailVerificationPrefix = "gopherai:email_verification"
+const (
+	defaultEmailVerificationPrefix = "gopherai:email_verification"
+	maxEmailBytes                  = 254
+	verificationCodeLen            = 6
+)
 
 /*
 	resendTTL > codeTTL 也能正常工作，只是会产生没有有效验证码且不能重发的时间段。
@@ -21,8 +25,11 @@ const defaultEmailVerificationPrefix = "gopherai:email_verification"
 	先检查resendTTL是否过期,所以如果resendTTL>codeTTL,那这个code都过期了依然还不能resend
 	所以从设置上要有resendTTL <= codeTTL,resendTTL过期了也不存在这个空窗期
 */
-// key:    s.codeKey(email), s.cooldownKey(email), s.attemptsKey(email)},
-// value:  code, ttl.Milliseconds(), cooldown.Milliseconds(),
+
+/*
+key:    s.codeKey(email), s.cooldownKey(email), s.attemptsKey(email)},
+value:  code, ttl.Milliseconds(), cooldown.Milliseconds(),
+*/
 var saveEmailVerificationCodeScript = redis.NewScript(`
 if redis.call("EXISTS", KEYS[2]) == 1 then
     return 0
@@ -34,8 +41,8 @@ return 1
 `)
 
 /*
-	key:   s.codeKey(email), s.attemptsKey(email)
-	value: code, maxAttempts,
+key:   s.codeKey(email), s.attemptsKey(email)
+value: code, maxAttempts,
 */
 var verifyAndConsumeEmailVerificationCodeScript = redis.NewScript(`
 local stored = redis.call("GET", KEYS[1])
@@ -224,7 +231,7 @@ func (s *EmailVerificationCodeStore) key(kind, email string) string {
 }
 
 func validEmailKeyInput(email string) bool {
-	if email == "" || email != strings.TrimSpace(email) || email != strings.ToLower(email) || len(email) > 254 {
+	if email == "" || email != strings.TrimSpace(email) || email != strings.ToLower(email) || len(email) > maxEmailBytes {
 		return false
 	}
 	address, err := mail.ParseAddress(email)
@@ -232,7 +239,7 @@ func validEmailKeyInput(email string) bool {
 }
 
 func validVerificationCode(code string) bool {
-	if len(code) != 6 {
+	if len(code) != verificationCodeLen {
 		return false
 	}
 	for i := range code {
