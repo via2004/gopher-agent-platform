@@ -66,12 +66,6 @@ func run() error {
 	}
 	defer pool.Close()
 
-	userService := user.NewService(platform.NewUserRepository(pool))
-	userHandler := httpapi.NewUserHandler(userService, tokenManager)
-
-	conversationService := conversation.NewService(platform.NewConversationRepository(pool))
-	conversationHandler := httpapi.NewConversationHandler(conversationService)
-
 	modelFeature, err := buildModelFeature(context.Background())
 	if err != nil {
 		return err
@@ -87,6 +81,20 @@ func run() error {
 		return err
 	}
 	defer redisClient.Close()
+
+	emailVerificationFeature, err := buildEmailVerificationFeature(redisClient)
+	if err != nil {
+		return err
+	}
+	userRepository := platform.NewUserRepository(pool)
+	userService := user.NewService(userRepository)
+	if emailVerificationFeature.enabled {
+		userService = user.NewServiceWithEmailVerifier(userRepository, emailVerificationFeature.service)
+	}
+	userHandler := httpapi.NewUserHandler(userService, tokenManager)
+
+	conversationService := conversation.NewService(platform.NewConversationRepository(pool))
+	conversationHandler := httpapi.NewConversationHandler(conversationService)
 
 	ragFeature, err := buildRAGFeature(redisClient)
 	if err != nil {
@@ -134,15 +142,16 @@ func run() error {
 
 	router := httpapi.NewRouter(
 		httpapi.RouterHandlers{
-			Users:         userHandler,
-			Conversations: conversationHandler,
-			Messages:      chatFeature.messageHandler,
-			Chat:          chatFeature.chatHandler,
-			Health:        checker,
-			ChatJobs:      chatFeature.jobHandler,
-			Images:        imageFeature.handler,
-			RAG:           ragFeature.handler,
-			TTS:           ttsFeature.handler,
+			Users:             userHandler,
+			Conversations:     conversationHandler,
+			Messages:          chatFeature.messageHandler,
+			Chat:              chatFeature.chatHandler,
+			Health:            checker,
+			ChatJobs:          chatFeature.jobHandler,
+			Images:            imageFeature.handler,
+			RAG:               ragFeature.handler,
+			TTS:               ttsFeature.handler,
+			EmailVerification: emailVerificationFeature.handler,
 		},
 		httpapi.RouterMiddleware{
 			Tokens:           tokenManager,

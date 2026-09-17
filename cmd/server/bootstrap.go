@@ -17,6 +17,7 @@ import (
 	"gopherai/internal/agent"
 	"gopherai/internal/chat"
 	"gopherai/internal/chatjob"
+	"gopherai/internal/emailverification"
 	"gopherai/internal/httpapi"
 	"gopherai/internal/image"
 	"gopherai/internal/llm"
@@ -30,20 +31,28 @@ import (
 	platform "gopherai/internal/platform/postgresql"
 	rabbitmqplatform "gopherai/internal/platform/rabbitmq"
 	redisplatform "gopherai/internal/platform/redis"
+	smtpplatform "gopherai/internal/platform/smtp"
 	"gopherai/internal/rag"
 	"gopherai/internal/tts"
 )
 
 const (
-	dependencyPingTimeout              = 5 * time.Second
-	rabbitMQConnectAttempts            = 15
-	rabbitMQConnectRetryInterval       = time.Second
-	defaultMCPCallTimeout              = 10 * time.Second
-	defaultBaiduTTSTimeout             = 10 * time.Second
-	defaultTTSRateLimit          int64 = 5
-	defaultTTSRateWindow               = time.Hour
-	mcpConnectAttempts                 = 15
-	mcpConnectRetryInterval            = time.Second
+	dependencyPingTimeout                  = 5 * time.Second
+	rabbitMQConnectAttempts                = 15
+	rabbitMQConnectRetryInterval           = time.Second
+	defaultMCPCallTimeout                  = 10 * time.Second
+	defaultBaiduTTSTimeout                 = 10 * time.Second
+	defaultTTSRateLimit              int64 = 5
+	defaultTTSRateWindow                   = time.Hour
+	defaultEmailVerificationCodeTTL        = 10 * time.Minute
+	defaultEmailVerificationResend         = time.Minute
+	defaultEmailVerificationAttempts       = 5
+	defaultSMTPHost                        = "smtp.qq.com"
+	defaultSMTPPort                        = 587
+	defaultSMTPFromName                    = "GopherAI"
+	defaultSMTPTimeout                     = 10 * time.Second
+	mcpConnectAttempts                     = 15
+	mcpConnectRetryInterval                = time.Second
 )
 
 type rabbitMQConnector func(string) (*rabbitmqplatform.RabbitMQClient, error)
@@ -158,6 +167,12 @@ type ragFeature struct {
 type ttsFeature struct {
 	handler *httpapi.TTSHandler
 	limiter *redisplatform.RateLimiter
+}
+
+type emailVerificationFeature struct {
+	enabled bool
+	service *emailverification.Service
+	handler *httpapi.EmailVerificationHandler
 }
 
 type chatFeature struct {
@@ -348,6 +363,83 @@ func buildTTSProvider() (tts.Provider, error) {
 	return client, nil
 }
 
+func buildEmailVerificationFeature(client *redisclient.Client) (*emailVerificationFeature, error) {
+	enabled, err := envBool("EMAIL_VERIFICATION_ENABLED", false)
+	if err != nil {
+		return nil, err
+	}
+	if !enabled {
+		service, err := emailverification.NewService(nil, nil, emailverification.Config{})
+		if err != nil {
+			return nil, fmt.Errorf("new disabled email verification service: %w", err)
+		}
+		return &emailVerificationFeature{
+			service: service,
+			handler: httpapi.NewEmailVerificationHandler(service),
+		}, nil
+	}
+
+	codeTTL, err := positiveDurationEnvOrDefault(
+		"EMAIL_VERIFICATION_CODE_TTL_SECONDS",
+		defaultEmailVerificationCodeTTL,
+	)
+	if err != nil {
+		return nil, err
+	}
+	resendInterval, err := positiveDurationEnvOrDefault(
+		"EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS",
+		defaultEmailVerificationResend,
+	)
+	if err != nil {
+		return nil, err
+	}
+	maxAttempts, err := positiveEnvIntOrDefault(
+		"EMAIL_VERIFICATION_MAX_ATTEMPTS",
+		defaultEmailVerificationAttempts,
+	)
+	if err != nil {
+		return nil, err
+	}
+	smtpPort, err := positiveEnvIntOrDefault("SMTP_PORT", defaultSMTPPort)
+	if err != nil {
+		return nil, err
+	}
+	smtpTimeout, err := positiveDurationEnvOrDefault("SMTP_TIMEOUT_SECONDS", defaultSMTPTimeout)
+	if err != nil {
+		return nil, err
+	}
+
+	store, err := redisplatform.NewEmailVerificationCodeStore(client)
+	if err != nil {
+		return nil, fmt.Errorf("new email verification code store: %w", err)
+	}
+	sender, err := smtpplatform.NewSender(smtpplatform.Config{
+		Host:     envOrDefault("SMTP_HOST", defaultSMTPHost),
+		Port:     smtpPort,
+		Username: os.Getenv("SMTP_USERNAME"),
+		Password: os.Getenv("SMTP_PASSWORD"),
+		From:     os.Getenv("SMTP_FROM"),
+		FromName: envOrDefault("SMTP_FROM_NAME", defaultSMTPFromName),
+		Timeout:  smtpTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("new SMTP sender: %w", err)
+	}
+	service, err := emailverification.NewService(store, sender, emailverification.Config{
+		CodeTTL:        codeTTL,
+		ResendInterval: resendInterval,
+		MaxAttempts:    maxAttempts,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("new email verification service: %w", err)
+	}
+	return &emailVerificationFeature{
+		enabled: true,
+		service: service,
+		handler: httpapi.NewEmailVerificationHandler(service),
+	}, nil
+}
+
 type rateLimiterFactory func(*redisclient.Client, int64, time.Duration) (*redisplatform.RateLimiter, error)
 
 func buildRateLimiter(client *redisclient.Client, limitEnv, windowEnv string, factory rateLimiterFactory) (*redisplatform.RateLimiter, error) {
@@ -382,6 +474,21 @@ func positiveEnvInt64OrDefault(name string, fallback int64) (int64, error) {
 		return fallback, nil
 	}
 	return positiveEnvInt64(name)
+}
+
+func positiveEnvIntOrDefault(name string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", name, err)
+	}
+	if parsed <= 0 {
+		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	return parsed, nil
 }
 
 func positiveDurationEnvOrDefault(name string, fallback time.Duration) (time.Duration, error) {

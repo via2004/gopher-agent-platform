@@ -599,7 +599,16 @@ Redis 或 SMTP 暂时不可用   -> 503 Service Unavailable
 
 ### 阶段 5：Bootstrap 与配置
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 新增可选 Email Verification Feature，统一组装 Redis Store、SMTP Sender、Service 和 Handler。
+- 功能关闭时发送接口返回 503，现有邮箱密码注册保持不变，并忽略无关 SMTP 配置。
+- 功能开启时严格解析验证码 TTL、发送冷却、最大尝试次数和 SMTP 配置。
+- 启用后的同一个 Service 同时服务发送接口，并作为 EmailVerifier 注入 user.Service。
+- SMTP Host、Port、From Name、超时和验证码参数提供代码默认值；账号、授权码和 From 必须显式配置。
+- `.env.example` 和 `.env.compose.example` 已增加开关与全部配置项，Compose 通过现有 env_file 透传。
 
 - 新增可选 Email Verification Feature。
 - 解析开关、TTL、冷却、最大尝试次数和 SMTP 配置。
@@ -608,7 +617,18 @@ Redis 或 SMTP 暂时不可用   -> 503 Service Unavailable
 
 ### 阶段 6：真实 E2E 与收尾
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 使用真实 QQ SMTP 授权码完成 STARTTLS、鉴权和验证码邮件投递，发送接口返回 `202 Accepted`。
+- 同一邮箱立即重发返回 `429 Too Many Requests`，验证发送冷却生效。
+- Redis 中验证码为六位数字；使用该验证码注册返回 `201 Created`。
+- 同一验证码再次注册返回 `400 INVALID_VERIFICATION_CODE`，验证单次消费生效。
+- 新用户使用邮箱密码登录返回 `200 OK` 和 Bearer Token。
+- 验证成功后 Redis code 与 attempts Key 均已删除。
+- 验收创建的测试用户、冷却 Key、临时文件和临时 RabbitMQ 已精确清理。
+- `go test ./...`、`go vet ./...`、相关竞态测试和 `git diff --check` 通过。
 
 - 使用真实 SMTP 授权码发送邮件。
 - 完成验证码注册、单次消费和发送冷却验收。

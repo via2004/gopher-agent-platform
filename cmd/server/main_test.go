@@ -15,6 +15,7 @@ import (
 	redisclient "github.com/redis/go-redis/v9"
 
 	"gopherai/internal/agent"
+	"gopherai/internal/emailverification"
 	"gopherai/internal/llm"
 	baiduttsplatform "gopherai/internal/platform/baidutts"
 	mcpplatform "gopherai/internal/platform/mcp"
@@ -47,6 +48,20 @@ var ttsEnvironmentNames = []string{
 	"BAIDU_TTS_TIMEOUT_SECONDS",
 	"TTS_RATE_LIMIT",
 	"TTS_RATE_WINDOW_SECONDS",
+}
+
+var emailVerificationEnvironmentNames = []string{
+	"EMAIL_VERIFICATION_ENABLED",
+	"EMAIL_VERIFICATION_CODE_TTL_SECONDS",
+	"EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS",
+	"EMAIL_VERIFICATION_MAX_ATTEMPTS",
+	"SMTP_HOST",
+	"SMTP_PORT",
+	"SMTP_USERNAME",
+	"SMTP_PASSWORD",
+	"SMTP_FROM",
+	"SMTP_FROM_NAME",
+	"SMTP_TIMEOUT_SECONDS",
 }
 
 func TestLoadEnvironmentAllowsMissingFile(t *testing.T) {
@@ -241,6 +256,25 @@ func TestPositiveEnvInt64OrDefault(t *testing.T) {
 	t.Setenv("TEST_OPTIONAL_POSITIVE_INT", " 7 ")
 	if got, err := positiveEnvInt64OrDefault("TEST_OPTIONAL_POSITIVE_INT", 5); err != nil || got != 7 {
 		t.Fatalf("configured value = %d, %v; want 7", got, err)
+	}
+}
+
+func TestPositiveEnvIntOrDefault(t *testing.T) {
+	t.Setenv("TEST_OPTIONAL_POSITIVE_INT", "")
+	if got, err := positiveEnvIntOrDefault("TEST_OPTIONAL_POSITIVE_INT", 5); err != nil || got != 5 {
+		t.Fatalf("default value = %d, %v; want 5", got, err)
+	}
+	t.Setenv("TEST_OPTIONAL_POSITIVE_INT", " 7 ")
+	if got, err := positiveEnvIntOrDefault("TEST_OPTIONAL_POSITIVE_INT", 5); err != nil || got != 7 {
+		t.Fatalf("configured value = %d, %v; want 7", got, err)
+	}
+	for _, value := range []string{"invalid", "0", "-1"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("TEST_OPTIONAL_POSITIVE_INT", value)
+			if _, err := positiveEnvIntOrDefault("TEST_OPTIONAL_POSITIVE_INT", 5); err == nil {
+				t.Fatalf("positiveEnvIntOrDefault(%q) error = nil", value)
+			}
+		})
 	}
 }
 
@@ -538,6 +572,89 @@ func TestBuildTTSFeatureRejectsInvalidRateLimit(t *testing.T) {
 	}
 }
 
+func TestBuildEmailVerificationFeatureKeepsRegistrationOptionalWhenDisabled(t *testing.T) {
+	clearEmailVerificationEnvironment(t)
+	t.Setenv("EMAIL_VERIFICATION_ENABLED", "false")
+	t.Setenv("SMTP_PORT", "invalid")
+	t.Setenv("EMAIL_VERIFICATION_CODE_TTL_SECONDS", "invalid")
+	redisClient := redisclient.NewClient(&redisclient.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = redisClient.Close() })
+
+	feature, err := buildEmailVerificationFeature(redisClient)
+	if err != nil {
+		t.Fatalf("buildEmailVerificationFeature() error = %v", err)
+	}
+	if feature == nil || feature.enabled || feature.service == nil || feature.handler == nil {
+		t.Fatalf("buildEmailVerificationFeature() feature = %#v", feature)
+	}
+	if err := feature.service.Send(context.Background(), "user@example.com"); !errors.Is(err, emailverification.ErrNotConfigured) {
+		t.Fatalf("disabled Send() error = %v, want %v", err, emailverification.ErrNotConfigured)
+	}
+}
+
+func TestBuildEmailVerificationFeatureBuildsConfiguredFeature(t *testing.T) {
+	clearEmailVerificationEnvironment(t)
+	setValidEmailVerificationEnvironment(t)
+	redisClient := redisclient.NewClient(&redisclient.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = redisClient.Close() })
+
+	feature, err := buildEmailVerificationFeature(redisClient)
+	if err != nil {
+		t.Fatalf("buildEmailVerificationFeature() error = %v", err)
+	}
+	if feature == nil || !feature.enabled || feature.service == nil || feature.handler == nil {
+		t.Fatalf("buildEmailVerificationFeature() feature = %#v", feature)
+	}
+}
+
+func TestBuildEmailVerificationFeatureRejectsInvalidConfiguration(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*testing.T)
+		wantEnv string
+	}{
+		{name: "invalid enabled", mutate: func(t *testing.T) { t.Setenv("EMAIL_VERIFICATION_ENABLED", "invalid") }, wantEnv: "EMAIL_VERIFICATION_ENABLED"},
+		{name: "invalid code TTL", mutate: func(t *testing.T) { t.Setenv("EMAIL_VERIFICATION_CODE_TTL_SECONDS", "0") }, wantEnv: "EMAIL_VERIFICATION_CODE_TTL_SECONDS"},
+		{name: "invalid resend interval", mutate: func(t *testing.T) { t.Setenv("EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS", "invalid") }, wantEnv: "EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS"},
+		{name: "resend over TTL", mutate: func(t *testing.T) {
+			t.Setenv("EMAIL_VERIFICATION_CODE_TTL_SECONDS", "60")
+			t.Setenv("EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS", "120")
+		}, wantEnv: "email verification service"},
+		{name: "invalid attempts", mutate: func(t *testing.T) { t.Setenv("EMAIL_VERIFICATION_MAX_ATTEMPTS", "0") }, wantEnv: "EMAIL_VERIFICATION_MAX_ATTEMPTS"},
+		{name: "invalid SMTP port", mutate: func(t *testing.T) { t.Setenv("SMTP_PORT", "70000") }, wantEnv: "SMTP"},
+		{name: "invalid SMTP timeout", mutate: func(t *testing.T) { t.Setenv("SMTP_TIMEOUT_SECONDS", "0") }, wantEnv: "SMTP_TIMEOUT_SECONDS"},
+		{name: "missing SMTP username", mutate: func(t *testing.T) { t.Setenv("SMTP_USERNAME", "") }, wantEnv: "SMTP"},
+		{name: "missing SMTP password", mutate: func(t *testing.T) { t.Setenv("SMTP_PASSWORD", "") }, wantEnv: "SMTP"},
+		{name: "missing SMTP from", mutate: func(t *testing.T) { t.Setenv("SMTP_FROM", "") }, wantEnv: "SMTP"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clearEmailVerificationEnvironment(t)
+			setValidEmailVerificationEnvironment(t)
+			test.mutate(t)
+			redisClient := redisclient.NewClient(&redisclient.Options{Addr: "127.0.0.1:1"})
+			t.Cleanup(func() { _ = redisClient.Close() })
+
+			feature, err := buildEmailVerificationFeature(redisClient)
+			if err == nil || !strings.Contains(err.Error(), test.wantEnv) {
+				t.Fatalf("buildEmailVerificationFeature() = %#v, %v; want error containing %q", feature, err, test.wantEnv)
+			}
+			if feature != nil {
+				t.Fatalf("buildEmailVerificationFeature() feature = %#v, want nil", feature)
+			}
+		})
+	}
+}
+
+func TestBuildEmailVerificationFeatureRejectsNilRedisClientWhenEnabled(t *testing.T) {
+	clearEmailVerificationEnvironment(t)
+	setValidEmailVerificationEnvironment(t)
+	if _, err := buildEmailVerificationFeature(nil); err == nil || !strings.Contains(err.Error(), "code store") {
+		t.Fatalf("buildEmailVerificationFeature() error = %v", err)
+	}
+}
+
 func TestHTTPAddress(t *testing.T) {
 	t.Setenv("HTTP_ADDR", "")
 	if got := httpAddress(); got != defaultHTTPAddr {
@@ -569,6 +686,28 @@ func clearTTSEnvironment(t *testing.T) {
 	for _, name := range ttsEnvironmentNames {
 		t.Setenv(name, "")
 	}
+}
+
+func clearEmailVerificationEnvironment(t *testing.T) {
+	t.Helper()
+	for _, name := range emailVerificationEnvironmentNames {
+		t.Setenv(name, "")
+	}
+}
+
+func setValidEmailVerificationEnvironment(t *testing.T) {
+	t.Helper()
+	t.Setenv("EMAIL_VERIFICATION_ENABLED", "true")
+	t.Setenv("EMAIL_VERIFICATION_CODE_TTL_SECONDS", "600")
+	t.Setenv("EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS", "60")
+	t.Setenv("EMAIL_VERIFICATION_MAX_ATTEMPTS", "5")
+	t.Setenv("SMTP_HOST", "smtp.example.com")
+	t.Setenv("SMTP_PORT", "587")
+	t.Setenv("SMTP_USERNAME", "sender@example.com")
+	t.Setenv("SMTP_PASSWORD", "authorization-code")
+	t.Setenv("SMTP_FROM", "sender@example.com")
+	t.Setenv("SMTP_FROM_NAME", "GopherAI")
+	t.Setenv("SMTP_TIMEOUT_SECONDS", "10")
 }
 
 type bootstrapWeatherClient struct{}

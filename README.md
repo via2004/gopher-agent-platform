@@ -84,6 +84,38 @@ GET  /api/v1/tts/tasks/:id
 `succeeded` 后使用响应中的临时 `audio_url` 下载或播放 MP3。默认每个用户每小时最多
 创建 5 个任务，查询不消耗创建额度。
 
+## 邮箱验证码注册
+
+邮箱验证默认关闭，现有邮箱密码注册流程保持不变。启用时在 `.env.compose` 中配置：
+
+```env
+EMAIL_VERIFICATION_ENABLED=true
+SMTP_USERNAME=sender@qq.com
+SMTP_PASSWORD=<SMTP 授权码>
+SMTP_FROM=sender@qq.com
+```
+
+QQ 邮箱的 `SMTP_PASSWORD` 是开启 SMTP 后生成的授权码，不是邮箱登录密码。默认使用
+`smtp.qq.com:587` 和 STARTTLS；验证码有效 10 分钟，同一邮箱 60 秒后可以重新发送。
+
+公开发送接口：
+
+```text
+POST /api/v1/auth/email-verification-codes
+```
+
+请求体为 `{"email":"user@example.com"}`。收到验证码后，在现有注册请求中增加：
+
+```json
+{
+  "email": "user@example.com",
+  "password": "password123",
+  "verification_code": "123456"
+}
+```
+
+验证码验证成功后会被立即消费，只能用于一次注册。
+
 重新构建 Backend 并启动：
 
 ```bash
