@@ -41,7 +41,15 @@ podman compose config --quiet
 
 ## 阶段 1：认证请求输入边界
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 注册和登录统一通过 `bindAuthRequest` 解析认证 JSON。
+- 两个接口都使用 `http.MaxBytesReader` 限制为 16 KiB。
+- 超过请求体限制返回 413，无效 JSON 保持返回 400。
+- 登录与注册统一校验密码为 8 到 72 字节，避免异常输入进入数据库查询和 bcrypt。
+- Handler 与 User Service 测试覆盖两个接口的请求体上限和密码长度边界。
 
 ### 问题
 

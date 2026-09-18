@@ -163,6 +163,23 @@ func TestUserHandlerRegisterRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestUserHandlerRegisterRejectsOversizedRequest(t *testing.T) {
+	registrar := &fakeUserRegistrar{}
+	router := newUserHandlerTestRouter(registrar)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
+		strings.NewReader(`{"email":"user@example.com","password":"`+
+			strings.Repeat("x", maxAuthRequestBodyBytes)+`"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	assertErrorResponse(t, recorder, http.StatusRequestEntityTooLarge, "INVALID_REQUEST")
+	if registrar.registerCalls != 0 {
+		t.Fatalf("Register() calls = %d, want 0", registrar.registerCalls)
+	}
+}
+
 func TestUserHandlerRegisterMapsServiceErrors(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -273,6 +290,24 @@ func TestUserHandlerLoginRejectsInvalidJSON(t *testing.T) {
 	assertErrorResponse(t, recorder, http.StatusBadRequest, "INVALID_REQUEST")
 	if registrar.loginCalls != 0 || tokens.calls != 0 {
 		t.Fatalf("calls after invalid JSON: Login = %d, Issue = %d; want both 0", registrar.loginCalls, tokens.calls)
+	}
+}
+
+func TestUserHandlerLoginRejectsOversizedRequest(t *testing.T) {
+	registrar := &fakeUserRegistrar{}
+	tokens := &fakeTokenIssuer{}
+	router := newLoginHandlerTestRouter(registrar, tokens)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login",
+		strings.NewReader(`{"email":"user@example.com","password":"`+
+			strings.Repeat("x", maxAuthRequestBodyBytes)+`"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	assertErrorResponse(t, recorder, http.StatusRequestEntityTooLarge, "INVALID_REQUEST")
+	if registrar.loginCalls != 0 || tokens.calls != 0 {
+		t.Fatalf("calls after oversized request: Login = %d, Issue = %d", registrar.loginCalls, tokens.calls)
 	}
 }
 

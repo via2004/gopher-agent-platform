@@ -9,7 +9,11 @@ import (
 	"strings"
 )
 
-const dummyBcryptHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+const (
+	dummyBcryptHash  = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+	minPasswordBytes = 8
+	maxPasswordBytes = 72
+)
 
 type Service struct {
 	users    UserRepository
@@ -31,16 +35,15 @@ func valid(email string) bool {
 	return err == nil && addr.Address == email
 }
 
+func validPassword(password string) bool {
+	return len(password) >= minPasswordBytes && len(password) <= maxPasswordBytes
+}
+
 func (s *Service) Register(ctx context.Context, email, password, verificationCode string) (*User, error) {
 	if email == "" {
 		return nil, ErrInvalidEmail
 	}
-	if password == "" {
-		return nil, ErrInvalidPassword
-	}
-
-	// limit the password length
-	if len := len(password); len < 8 || len > 72 {
+	if !validPassword(password) {
 		return nil, ErrInvalidPassword
 	}
 
@@ -74,7 +77,7 @@ func (s *Service) Login(ctx context.Context, email string, password string) (*Us
 	if email == "" {
 		return nil, ErrInvalidEmail
 	}
-	if password == "" {
+	if !validPassword(password) {
 		return nil, ErrInvalidPassword
 	}
 

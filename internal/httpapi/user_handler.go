@@ -12,6 +12,8 @@ import (
 	"gopherai/internal/user"
 )
 
+const maxAuthRequestBodyBytes = 16 << 10 // 16 KiB
+
 type UserHandler struct {
 	users  UserService
 	tokens TokenIssuer
@@ -68,10 +70,7 @@ func NewUserHandler(users UserService, tokens TokenIssuer) *UserHandler {
 
 func (h *UserHandler) Register(c *gin.Context) {
 	userRequest := newRegisterAndLoginRequest()
-	if err := c.ShouldBindJSON(userRequest); err != nil {
-		c.JSON(http.StatusBadRequest, &errorResponse{
-			Code: "INVALID_REQUEST", Message: "request is invalid",
-		})
+	if !bindAuthRequest(c, userRequest) {
 		return
 	}
 
@@ -124,10 +123,7 @@ func (h *UserHandler) Register(c *gin.Context) {
 
 func (h *UserHandler) Login(c *gin.Context) {
 	userRequest := newRegisterAndLoginRequest()
-	if err := c.ShouldBindJSON(userRequest); err != nil {
-		c.JSON(http.StatusBadRequest, &errorResponse{
-			Code: "INVALID_REQUEST", Message: "request is invalid",
-		})
+	if !bindAuthRequest(c, userRequest) {
 		return
 	}
 
@@ -162,6 +158,24 @@ func (h *UserHandler) Login(c *gin.Context) {
 		AccessToken: accessToken,
 		TokenType:   "Bearer",
 	})
+}
+
+func bindAuthRequest(c *gin.Context, request *registerAndLoginRequest) bool {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxAuthRequestBodyBytes)
+	if err := c.ShouldBindJSON(request); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, &errorResponse{
+				Code: "INVALID_REQUEST", Message: "request is too large",
+			})
+			return false
+		}
+		c.JSON(http.StatusBadRequest, &errorResponse{
+			Code: "INVALID_REQUEST", Message: "request is invalid",
+		})
+		return false
+	}
+	return true
 }
 
 func (h *UserHandler) Me(c *gin.Context) {

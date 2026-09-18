@@ -253,6 +253,8 @@ func TestServiceLoginRejectsInvalidInput(t *testing.T) {
 		{name: "whitespace email", email: "   ", password: "password123", wantErr: ErrInvalidEmail},
 		{name: "invalid email", email: "not-an-email", password: "password123", wantErr: ErrInvalidEmail},
 		{name: "empty password", email: "user@example.com", password: "", wantErr: ErrInvalidPassword},
+		{name: "short password", email: "user@example.com", password: "1234567", wantErr: ErrInvalidPassword},
+		{name: "password over bcrypt limit", email: "user@example.com", password: strings.Repeat("a", 73), wantErr: ErrInvalidPassword},
 	}
 
 	for _, tt := range tests {
