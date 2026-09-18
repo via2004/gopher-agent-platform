@@ -146,7 +146,7 @@ func TestNewRouterExposesEmailVerificationRouteWithoutAuthentication(t *testing.
 			Users:             NewUserHandler(&fakeUserRegistrar{}, nil),
 			EmailVerification: NewEmailVerificationHandler(service),
 		},
-		RouterMiddleware{Tokens: verifier},
+		RouterMiddleware{Tokens: verifier, EmailVerificationLimiter: &fakeRateLimiter{allowed: true}},
 	)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/email-verification-codes", strings.NewReader(`{"email":"user@example.com"}`))
 	request.Header.Set("Content-Type", "application/json")

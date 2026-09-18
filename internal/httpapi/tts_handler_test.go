@@ -282,8 +282,8 @@ func TestNewRouterRegistersAuthenticatedTTSRoutes(t *testing.T) {
 	if verifier.calls != 2 || service.createCalls != 1 || service.getCalls != 1 || ttsLimiter.calls != 1 {
 		t.Fatalf("calls = verify %d, create %d, get %d, TTS limit %d", verifier.calls, service.createCalls, service.getCalls, ttsLimiter.calls)
 	}
-	if ttsLimiter.userID != 42 {
-		t.Fatalf("TTS limiter user ID = %d, want 42", ttsLimiter.userID)
+	if ttsLimiter.identity != "42" {
+		t.Fatalf("TTS limiter identity = %q, want 42", ttsLimiter.identity)
 	}
 }
 

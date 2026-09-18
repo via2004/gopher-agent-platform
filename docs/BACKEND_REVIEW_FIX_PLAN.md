@@ -102,7 +102,16 @@ User Service 的登录与注册都执行相同的密码长度校验：
 
 ## 阶段 2：公开认证接口限流
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- RateLimiter 统一使用字符串 identity，现有 Redis 固定窗口 Lua 和用户限流行为保持不变。
+- 认证请求把 user ID 转成字符串；匿名 IP limiter 在 Redis 层使用 identity 的 SHA-256 作为 Key 后缀。
+- 匿名限流 Middleware 只解析 RemoteAddr，不信任转发 Header。
+- 注册、登录和验证码发送分别使用独立 Redis prefix 与独立默认额度。
+- Bootstrap、配置示例和实际开发配置已补齐六个匿名限流参数。
+- 单元与 Redis integration 测试覆盖 IP 解析、Header 伪造、限流错误、独立 Key 和并发计数。
 
 ### 问题
 
@@ -120,10 +129,10 @@ POST /api/v1/auth/email-verification-codes
 
 ### 冻结方案
 
-新增按来源 IP 计数的匿名限流边界，不修改现有按用户限流器：
+统一限流接口的 identity 类型；已认证与匿名 Middleware 分别负责提取用户 ID 和来源 IP：
 
 ```go
-type AnonymousRateLimiter interface {
+type RateLimiter interface {
     Allow(ctx context.Context, identity string) (
         allowed bool,
         retryAfter time.Duration,

@@ -22,10 +22,13 @@ type RouterHandlers struct {
 
 // RouterMiddleware 汇总 Router 使用的认证与业务限流依赖。
 type RouterMiddleware struct {
-	Tokens           TokenVerifier
-	ChatLimiter      RateLimiter
-	RAGUploadLimiter RateLimiter
-	TTSLimiter       RateLimiter
+	Tokens                   TokenVerifier
+	ChatLimiter              RateLimiter
+	RAGUploadLimiter         RateLimiter
+	TTSLimiter               RateLimiter
+	AuthRegisterLimiter      RateLimiter
+	AuthLoginLimiter         RateLimiter
+	EmailVerificationLimiter RateLimiter
 }
 
 func NewRouter(
@@ -38,7 +41,7 @@ func NewRouter(
 	router.Use(LogMiddleware())
 	router.Use(gin.Recovery())
 
-	registerPublicRoutes(router, handlers)
+	registerPublicRoutes(router, handlers, middleware)
 
 	authenticated := router.Group("/api/v1")
 	authenticated.Use(AuthMiddleware(middleware.Tokens))
@@ -46,16 +49,16 @@ func NewRouter(
 	return router
 }
 
-func registerPublicRoutes(router *gin.Engine, handlers RouterHandlers) {
+func registerPublicRoutes(router *gin.Engine, handlers RouterHandlers, middleware RouterMiddleware) {
 	router.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "pong",
 		})
 	})
 	router.GET("/readyz", handlers.Health.Ready)
-	router.POST("/api/v1/auth/register", handlers.Users.Register)
-	router.POST("/api/v1/auth/login", handlers.Users.Login)
-	router.POST("/api/v1/auth/email-verification-codes", handlers.EmailVerification.Send)
+	router.POST("/api/v1/auth/register", AnonymousRateLimitMiddleware(middleware.AuthRegisterLimiter), handlers.Users.Register)
+	router.POST("/api/v1/auth/login", AnonymousRateLimitMiddleware(middleware.AuthLoginLimiter), handlers.Users.Login)
+	router.POST("/api/v1/auth/email-verification-codes", AnonymousRateLimitMiddleware(middleware.EmailVerificationLimiter), handlers.EmailVerification.Send)
 }
 
 func registerAuthenticatedRoutes(group *gin.RouterGroup, handlers RouterHandlers, middleware RouterMiddleware) {

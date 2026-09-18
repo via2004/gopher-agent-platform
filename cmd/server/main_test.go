@@ -21,6 +21,7 @@ import (
 	mcpplatform "gopherai/internal/platform/mcp"
 	openaiplatform "gopherai/internal/platform/openai"
 	rabbitmqplatform "gopherai/internal/platform/rabbitmq"
+	redisplatform "gopherai/internal/platform/redis"
 	"gopherai/internal/weather"
 )
 
@@ -62,6 +63,15 @@ var emailVerificationEnvironmentNames = []string{
 	"SMTP_FROM",
 	"SMTP_FROM_NAME",
 	"SMTP_TIMEOUT_SECONDS",
+}
+
+var authRateLimitEnvironmentNames = []string{
+	"AUTH_REGISTER_RATE_LIMIT",
+	"AUTH_REGISTER_RATE_WINDOW_SECONDS",
+	"AUTH_LOGIN_RATE_LIMIT",
+	"AUTH_LOGIN_RATE_WINDOW_SECONDS",
+	"EMAIL_VERIFICATION_IP_RATE_LIMIT",
+	"EMAIL_VERIFICATION_IP_RATE_WINDOW_SECONDS",
 }
 
 func TestLoadEnvironmentAllowsMissingFile(t *testing.T) {
@@ -292,6 +302,48 @@ func TestPositiveDurationEnvOrDefault(t *testing.T) {
 			t.Setenv("TEST_DURATION_SECONDS", value)
 			if _, err := positiveDurationEnvOrDefault("TEST_DURATION_SECONDS", time.Second); err == nil {
 				t.Fatalf("duration %q error = nil", value)
+			}
+		})
+	}
+}
+
+func TestBuildRateLimiterUsesDefaultsAndConfiguredValues(t *testing.T) {
+	tests := []struct {
+		name       string
+		limit      string
+		window     string
+		wantLimit  int64
+		wantWindow time.Duration
+	}{
+		{name: "defaults", wantLimit: 10, wantWindow: time.Minute},
+		{name: "configured", limit: "20", window: "300", wantLimit: 20, wantWindow: 5 * time.Minute},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("TEST_RATE_LIMIT", test.limit)
+			t.Setenv("TEST_RATE_WINDOW_SECONDS", test.window)
+			var gotLimit int64
+			var gotWindow time.Duration
+			wantLimiter := &redisplatform.RateLimiter{}
+
+			limiter, err := buildRateLimiter(
+				nil,
+				"TEST_RATE_LIMIT",
+				"TEST_RATE_WINDOW_SECONDS",
+				10,
+				time.Minute,
+				func(_ *redisclient.Client, limit int64, window time.Duration) (*redisplatform.RateLimiter, error) {
+					gotLimit = limit
+					gotWindow = window
+					return wantLimiter, nil
+				},
+			)
+			if err != nil {
+				t.Fatalf("buildRateLimiter() error = %v", err)
+			}
+			if limiter != wantLimiter || gotLimit != test.wantLimit || gotWindow != test.wantWindow {
+				t.Fatalf("buildRateLimiter() = %p with limit %d and window %v; want %p, %d, %v", limiter, gotLimit, gotWindow, wantLimiter, test.wantLimit, test.wantWindow)
 			}
 		})
 	}
@@ -655,6 +707,65 @@ func TestBuildEmailVerificationFeatureRejectsNilRedisClientWhenEnabled(t *testin
 	}
 }
 
+func TestBuildAuthRateLimitersUsesDefaultsAndConfiguredValues(t *testing.T) {
+	tests := []struct {
+		name string
+		set  func(*testing.T)
+	}{
+		{name: "defaults"},
+		{name: "configured", set: func(t *testing.T) {
+			t.Setenv("AUTH_REGISTER_RATE_LIMIT", "11")
+			t.Setenv("AUTH_REGISTER_RATE_WINDOW_SECONDS", "601")
+			t.Setenv("AUTH_LOGIN_RATE_LIMIT", "21")
+			t.Setenv("AUTH_LOGIN_RATE_WINDOW_SECONDS", "301")
+			t.Setenv("EMAIL_VERIFICATION_IP_RATE_LIMIT", "12")
+			t.Setenv("EMAIL_VERIFICATION_IP_RATE_WINDOW_SECONDS", "3601")
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clearAuthRateLimitEnvironment(t)
+			if test.set != nil {
+				test.set(t)
+			}
+			client := redisclient.NewClient(&redisclient.Options{Addr: "127.0.0.1:6379"})
+			t.Cleanup(func() { _ = client.Close() })
+
+			limiters, err := buildAuthRateLimiters(client)
+			if err != nil {
+				t.Fatalf("buildAuthRateLimiters() error = %v", err)
+			}
+			if limiters == nil || limiters.register == nil || limiters.login == nil || limiters.emailVerification == nil {
+				t.Fatalf("buildAuthRateLimiters() = %#v", limiters)
+			}
+		})
+	}
+}
+
+func TestBuildAuthRateLimitersRejectsInvalidConfiguration(t *testing.T) {
+	for _, name := range authRateLimitEnvironmentNames {
+		t.Run(name, func(t *testing.T) {
+			clearAuthRateLimitEnvironment(t)
+			t.Setenv(name, "0")
+			client := redisclient.NewClient(&redisclient.Options{Addr: "127.0.0.1:6379"})
+			t.Cleanup(func() { _ = client.Close() })
+
+			_, err := buildAuthRateLimiters(client)
+			if err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("buildAuthRateLimiters() error = %v, want error naming %s", err, name)
+			}
+		})
+	}
+}
+
+func TestBuildAuthRateLimitersRejectsNilRedisClient(t *testing.T) {
+	clearAuthRateLimitEnvironment(t)
+	if _, err := buildAuthRateLimiters(nil); err == nil {
+		t.Fatal("buildAuthRateLimiters() error = nil, want error")
+	}
+}
+
 func TestHTTPAddress(t *testing.T) {
 	t.Setenv("HTTP_ADDR", "")
 	if got := httpAddress(); got != defaultHTTPAddr {
@@ -691,6 +802,13 @@ func clearTTSEnvironment(t *testing.T) {
 func clearEmailVerificationEnvironment(t *testing.T) {
 	t.Helper()
 	for _, name := range emailVerificationEnvironmentNames {
+		t.Setenv(name, "")
+	}
+}
+
+func clearAuthRateLimitEnvironment(t *testing.T) {
+	t.Helper()
+	for _, name := range authRateLimitEnvironmentNames {
 		t.Setenv(name, "")
 	}
 }

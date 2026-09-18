@@ -58,7 +58,7 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 		Email:     "user@example.com",
 		CreatedAt: createdAt,
 	}}
-	router := NewRouter(RouterHandlers{Users: NewUserHandler(registrar, nil)}, RouterMiddleware{})
+	router := NewRouter(RouterHandlers{Users: NewUserHandler(registrar, nil)}, RouterMiddleware{AuthRegisterLimiter: &fakeRateLimiter{allowed: true}})
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),
@@ -72,6 +72,57 @@ func TestNewRouterRegistersUserRegistrationRoute(t *testing.T) {
 	}
 	if registrar.registerCalls != 1 {
 		t.Fatalf("Register() calls = %d, want 1", registrar.registerCalls)
+	}
+}
+
+func TestNewRouterUsesDedicatedAnonymousLimitersForPublicAuthRoutes(t *testing.T) {
+	registrar := &fakeUserRegistrar{
+		registered: &user.User{ID: 42, Email: "user@example.com"},
+		loggedIn:   &user.User{ID: 42, Email: "user@example.com"},
+	}
+	verification := &fakeEmailVerificationService{}
+	registerLimiter := &fakeRateLimiter{allowed: true}
+	loginLimiter := &fakeRateLimiter{allowed: true}
+	emailLimiter := &fakeRateLimiter{allowed: true}
+	router := NewRouter(
+		RouterHandlers{
+			Users:             NewUserHandler(registrar, &fakeTokenIssuer{token: "access-token"}),
+			EmailVerification: NewEmailVerificationHandler(verification),
+		},
+		RouterMiddleware{
+			AuthRegisterLimiter:      registerLimiter,
+			AuthLoginLimiter:         loginLimiter,
+			EmailVerificationLimiter: emailLimiter,
+		},
+	)
+
+	requests := []struct {
+		path string
+		body string
+		want int
+	}{
+		{path: "/api/v1/auth/register", body: `{"email":"user@example.com","password":"password123"}`, want: http.StatusCreated},
+		{path: "/api/v1/auth/login", body: `{"email":"user@example.com","password":"password123"}`, want: http.StatusOK},
+		{path: "/api/v1/auth/email-verification-codes", body: `{"email":"user@example.com"}`, want: http.StatusAccepted},
+	}
+	for _, request := range requests {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, request.path, strings.NewReader(request.body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, req)
+		if recorder.Code != request.want {
+			t.Fatalf("POST %s status = %d, want %d; body = %s", request.path, recorder.Code, request.want, recorder.Body.String())
+		}
+	}
+
+	for name, limiter := range map[string]*fakeRateLimiter{
+		"register":           registerLimiter,
+		"login":              loginLimiter,
+		"email verification": emailLimiter,
+	} {
+		if limiter.calls != 1 || limiter.identity != "192.0.2.1" {
+			t.Fatalf("%s limiter = %d calls with identity %q; want 1 call with 192.0.2.1", name, limiter.calls, limiter.identity)
+		}
 	}
 }
 
@@ -444,7 +495,7 @@ func (panicUserRegistrar) GetByID(ctx context.Context, userID uint64) (*user.Use
 }
 
 func TestNewRouterRecoversFromHandlerPanic(t *testing.T) {
-	router := NewRouter(RouterHandlers{Users: NewUserHandler(panicUserRegistrar{}, nil)}, RouterMiddleware{})
+	router := NewRouter(RouterHandlers{Users: NewUserHandler(panicUserRegistrar{}, nil)}, RouterMiddleware{AuthRegisterLimiter: &fakeRateLimiter{allowed: true}})
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
 		strings.NewReader(`{"email":"user@example.com","password":"password123"}`),
@@ -485,8 +536,8 @@ func TestNewRouterUsesDedicatedRAGUploadLimiter(t *testing.T) {
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	if ragLimiter.calls != 1 || ragLimiter.userID != 42 {
-		t.Fatalf("RAG limiter = %d calls for user %d", ragLimiter.calls, ragLimiter.userID)
+	if ragLimiter.calls != 1 || ragLimiter.identity != "42" {
+		t.Fatalf("RAG limiter = %d calls with identity %q", ragLimiter.calls, ragLimiter.identity)
 	}
 	if chatLimiter.calls != 0 {
 		t.Fatalf("chat limiter calls = %d, want 0", chatLimiter.calls)

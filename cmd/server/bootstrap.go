@@ -42,6 +42,10 @@ const (
 	rabbitMQConnectRetryInterval           = time.Second
 	defaultMCPCallTimeout                  = 10 * time.Second
 	defaultBaiduTTSTimeout                 = 10 * time.Second
+	defaultChatRateLimit             int64 = 10
+	defaultChatRateWindow                  = time.Minute
+	defaultRAGUploadRateLimit        int64 = 3
+	defaultRAGUploadRateWindow             = time.Hour
 	defaultTTSRateLimit              int64 = 5
 	defaultTTSRateWindow                   = time.Hour
 	defaultEmailVerificationCodeTTL        = 10 * time.Minute
@@ -51,6 +55,12 @@ const (
 	defaultSMTPPort                        = 587
 	defaultSMTPFromName                    = "GopherAI"
 	defaultSMTPTimeout                     = 10 * time.Second
+	defaultAuthRegisterRateLimit     int64 = 10
+	defaultAuthRegisterRateWindow          = 10 * time.Minute
+	defaultAuthLoginRateLimit        int64 = 20
+	defaultAuthLoginRateWindow             = 5 * time.Minute
+	defaultEmailVerificationIPLimit  int64 = 10
+	defaultEmailVerificationIPWindow       = time.Hour
 	mcpConnectAttempts                     = 15
 	mcpConnectRetryInterval                = time.Second
 )
@@ -175,6 +185,12 @@ type emailVerificationFeature struct {
 	handler *httpapi.EmailVerificationHandler
 }
 
+type authRateLimiters struct {
+	register          *redisplatform.RateLimiter
+	login             *redisplatform.RateLimiter
+	emailVerification *redisplatform.RateLimiter
+}
+
 type chatFeature struct {
 	messageHandler *httpapi.MessageHandler
 	chatHandler    *httpapi.ChatHandler
@@ -291,6 +307,8 @@ func buildRAGFeature(client *redisclient.Client) (*ragFeature, error) {
 		client,
 		"RAG_UPLOAD_RATE_LIMIT",
 		"RAG_UPLOAD_RATE_WINDOW_SECONDS",
+		defaultRAGUploadRateLimit,
+		defaultRAGUploadRateWindow,
 		redisplatform.NewRAGUploadRateLimiter,
 	)
 	if err != nil {
@@ -308,7 +326,14 @@ func buildTTSFeature(client *redisclient.Client) (*ttsFeature, error) {
 	if err != nil {
 		return nil, err
 	}
-	limiter, err := buildTTSRateLimiter(client)
+	limiter, err := buildRateLimiter(
+		client,
+		"TTS_RATE_LIMIT",
+		"TTS_RATE_WINDOW_SECONDS",
+		defaultTTSRateLimit,
+		defaultTTSRateWindow,
+		redisplatform.NewTTSRateLimiter,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -317,22 +342,6 @@ func buildTTSFeature(client *redisclient.Client) (*ttsFeature, error) {
 		handler: httpapi.NewTTSHandler(service),
 		limiter: limiter,
 	}, nil
-}
-
-func buildTTSRateLimiter(client *redisclient.Client) (*redisplatform.RateLimiter, error) {
-	limit, err := positiveEnvInt64OrDefault("TTS_RATE_LIMIT", defaultTTSRateLimit)
-	if err != nil {
-		return nil, err
-	}
-	window, err := positiveDurationEnvOrDefault("TTS_RATE_WINDOW_SECONDS", defaultTTSRateWindow)
-	if err != nil {
-		return nil, err
-	}
-	limiter, err := redisplatform.NewTTSRateLimiter(client, limit, window)
-	if err != nil {
-		return nil, fmt.Errorf("new TTS rate limiter: %w", err)
-	}
-	return limiter, nil
 }
 
 func buildTTSProvider() (tts.Provider, error) {
@@ -442,16 +451,63 @@ func buildEmailVerificationFeature(client *redisclient.Client) (*emailVerificati
 
 type rateLimiterFactory func(*redisclient.Client, int64, time.Duration) (*redisplatform.RateLimiter, error)
 
-func buildRateLimiter(client *redisclient.Client, limitEnv, windowEnv string, factory rateLimiterFactory) (*redisplatform.RateLimiter, error) {
-	limit, err := positiveEnvInt64(limitEnv)
+func buildAuthRateLimiters(client *redisclient.Client) (*authRateLimiters, error) {
+	register, err := buildRateLimiter(
+		client,
+		"AUTH_REGISTER_RATE_LIMIT",
+		"AUTH_REGISTER_RATE_WINDOW_SECONDS",
+		defaultAuthRegisterRateLimit,
+		defaultAuthRegisterRateWindow,
+		redisplatform.NewAuthRegisterRateLimiter,
+	)
 	if err != nil {
 		return nil, err
 	}
-	windowSeconds, err := positiveEnvInt64(windowEnv)
+	login, err := buildRateLimiter(
+		client,
+		"AUTH_LOGIN_RATE_LIMIT",
+		"AUTH_LOGIN_RATE_WINDOW_SECONDS",
+		defaultAuthLoginRateLimit,
+		defaultAuthLoginRateWindow,
+		redisplatform.NewAuthLoginRateLimiter,
+	)
 	if err != nil {
 		return nil, err
 	}
-	limiter, err := factory(client, limit, time.Duration(windowSeconds)*time.Second)
+	emailVerification, err := buildRateLimiter(
+		client,
+		"EMAIL_VERIFICATION_IP_RATE_LIMIT",
+		"EMAIL_VERIFICATION_IP_RATE_WINDOW_SECONDS",
+		defaultEmailVerificationIPLimit,
+		defaultEmailVerificationIPWindow,
+		redisplatform.NewEmailVerificationIPRateLimiter,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &authRateLimiters{
+		register:          register,
+		login:             login,
+		emailVerification: emailVerification,
+	}, nil
+}
+
+func buildRateLimiter(
+	client *redisclient.Client,
+	limitEnv, windowEnv string,
+	defaultLimit int64,
+	defaultWindow time.Duration,
+	factory rateLimiterFactory,
+) (*redisplatform.RateLimiter, error) {
+	limit, err := positiveEnvInt64OrDefault(limitEnv, defaultLimit)
+	if err != nil {
+		return nil, err
+	}
+	window, err := positiveDurationEnvOrDefault(windowEnv, defaultWindow)
+	if err != nil {
+		return nil, err
+	}
+	limiter, err := factory(client, limit, window)
 	if err != nil {
 		return nil, fmt.Errorf("new rate limiter for %s: %w", limitEnv, err)
 	}

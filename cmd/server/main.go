@@ -86,6 +86,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	authLimiters, err := buildAuthRateLimiters(redisClient)
+	if err != nil {
+		return err
+	}
 	userRepository := platform.NewUserRepository(pool)
 	userService := user.NewService(userRepository)
 	if emailVerificationFeature.enabled {
@@ -108,6 +112,8 @@ func run() error {
 		redisClient,
 		"CHAT_RATE_LIMIT",
 		"CHAT_RATE_WINDOW_SECONDS",
+		defaultChatRateLimit,
+		defaultChatRateWindow,
 		redisplatform.NewRateLimiter,
 	)
 	if err != nil {
@@ -154,10 +160,13 @@ func run() error {
 			EmailVerification: emailVerificationFeature.handler,
 		},
 		httpapi.RouterMiddleware{
-			Tokens:           tokenManager,
-			ChatLimiter:      chatRateLimiter,
-			RAGUploadLimiter: ragFeature.uploadLimiter,
-			TTSLimiter:       ttsFeature.limiter,
+			Tokens:                   tokenManager,
+			ChatLimiter:              chatRateLimiter,
+			RAGUploadLimiter:         ragFeature.uploadLimiter,
+			TTSLimiter:               ttsFeature.limiter,
+			AuthRegisterLimiter:      authLimiters.register,
+			AuthLoginLimiter:         authLimiters.login,
+			EmailVerificationLimiter: authLimiters.emailVerification,
 		},
 	)
 

@@ -18,4 +18,5 @@ var (
 	ErrTTLInvalid         = errors.New("TTL is invalid")
 	ErrCooldownInvalid    = errors.New("cooldown is invalid")
 	ErrMaxAttemptsInvalid = errors.New("max attempts is invalid")
+	ErrIdentityInvalid    = errors.New("rate limit identity is invalid")
 )
