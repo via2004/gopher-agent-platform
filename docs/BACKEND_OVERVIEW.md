@@ -107,7 +107,7 @@ flowchart TD
 用“用户在已有会话里问一个问题”作为例子：
 
 1. Handler 取得可信 userID、URL 中的 conversationID 和 JSON content，并设置两分钟上下文超时。
-2. `ReceiveAndResponse` 调用 `receive/startModelCall`。**短事务 A**：创建 user message，再创建 running model_call；任何一步失败，整个事务回滚。
+2. `Chat` 调用 `receive/startModelCall`。**短事务 A**：创建 user message，再创建 running model_call；任何一步失败，整个事务回滚。
 3. `respond` 读取最近 40 条消息，定位本次提问；这就是多轮上下文的来源，不是模型自动永久记住网站上的对话。
 4. `prepareModelMessages` 根据当前提问检索用户文档，取最多 4 个相关块，拼入发给模型的本次问题。数据库中的原始用户消息不被这些资料覆盖。
 5. 在数据库事务外调用 `model.Generate`。实际对象可能是普通 OpenAI Client，也可能是 Agent Client。

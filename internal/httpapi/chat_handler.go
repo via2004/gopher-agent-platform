@@ -16,7 +16,7 @@ import (
 const streamMaxDuration = 2 * time.Minute
 
 type ChatService interface {
-	ReceiveAndResponse(ctx context.Context, userID uint64,
+	Chat(ctx context.Context, userID uint64,
 		conversationID uint64, content string) (*chat.Result, error)
 	ChatStreaming(ctx context.Context, userID uint64,
 		conversationID uint64, content string,
@@ -81,7 +81,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	chatCtx, cancel := context.WithTimeout(c.Request.Context(), streamMaxDuration)
 	defer cancel()
 
-	receiveMessage, err := h.chats.ReceiveAndResponse(chatCtx, userID, conversationID, request.Content)
+	receiveMessage, err := h.chats.Chat(chatCtx, userID, conversationID, request.Content)
 	switch {
 	case errors.Is(err, message.ErrInvalidContent),
 		errors.Is(err, conversation.ErrInvalidUserID),
@@ -129,6 +129,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	}
 }
 
+// 实际流式Chat的接口
 func (h *ChatHandler) ChatStreaming(c *gin.Context) {
 	userID, ok := checkUserIDValidity(c)
 	if !ok {
@@ -180,6 +181,7 @@ func (h *ChatHandler) ChatStreaming(c *gin.Context) {
 	chatCtx, cancel := context.WithTimeout(c.Request.Context(), streamMaxDuration)
 	defer cancel()
 
+	// 调用ChatStreaming, 同时封装了onDelta
 	receiveMessage, err := h.chats.ChatStreaming(
 		chatCtx, userID,
 		conversationID, request.Content, func(delta string) error {

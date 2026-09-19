@@ -101,7 +101,7 @@ func TestPrepareModelMessagesWithoutDocumentKeepsOriginalMessages(t *testing.T) 
 	}
 }
 
-func TestReceiveAndResponseFinishesModelCallWhenRAGPreparationFails(t *testing.T) {
+func TestChatFinishesModelCallWhenRAGPreparationFails(t *testing.T) {
 	calls := make([]string, 0)
 	history := []*message.Message{{ID: 2, ConversationID: 9, Role: message.RoleUser, Content: "question"}}
 	messages := &fakeMessageService{calls: &calls, recent: history}
@@ -111,9 +111,9 @@ func TestReceiveAndResponseFinishesModelCallWhenRAGPreparationFails(t *testing.T
 	wantErr := errors.New("embedding unavailable")
 	service := NewService(messages, model, modelCalls, transactions, &fakeRetriever{err: wantErr})
 
-	result, err := service.ReceiveAndResponse(context.Background(), 7, 9, "question")
+	result, err := service.Chat(context.Background(), 7, 9, "question")
 	if !errors.Is(err, wantErr) || result != nil {
-		t.Fatalf("ReceiveAndResponse() = %#v, %v", result, err)
+		t.Fatalf("Chat() = %#v, %v", result, err)
 	}
 	if modelCalls.finished == nil || modelCalls.finished.ErrorCode == nil || *modelCalls.finished.ErrorCode != "prepare_model_message_failed" {
 		t.Fatalf("finished model call = %#v", modelCalls.finished)
@@ -288,42 +288,42 @@ type fakeModelCallService struct {
 	finishHasDeadline bool
 }
 
-func (f *fakeModelCallService) Start(ctx context.Context, userID uint64, model *modelcall.Model) error {
+func (f *fakeModelCallService) Start(ctx context.Context, userID uint64, callRecord *modelcall.Model) error {
 	*f.calls = append(*f.calls, "model-start")
 	f.startCtx = ctx
 	f.startUserID = userID
-	f.started = model
+	f.started = callRecord
 	if f.startErr == nil {
-		model.ID = 101
-		model.StartedAt = time.Date(2026, time.August, 11, 10, 0, 0, 0, time.UTC)
-		model.Status = modelcall.StatusRunning
+		callRecord.ID = 101
+		callRecord.StartedAt = time.Date(2026, time.August, 11, 10, 0, 0, 0, time.UTC)
+		callRecord.Status = modelcall.StatusRunning
 	}
 	return f.startErr
 }
 
-func (f *fakeModelCallService) Complete(ctx context.Context, userID uint64, model *modelcall.Model) error {
+func (f *fakeModelCallService) Complete(ctx context.Context, userID uint64, callRecord *modelcall.Model) error {
 	*f.calls = append(*f.calls, "model-complete")
 	f.completeCtx = ctx
 	f.completeUser = userID
-	f.completed = model
+	f.completed = callRecord
 	if f.completeErr == nil {
-		model.Status = modelcall.StatusCompleted
+		callRecord.Status = modelcall.StatusCompleted
 		finishedAt := time.Date(2026, time.August, 11, 10, 0, 1, 0, time.UTC)
-		model.FinishedAt = &finishedAt
+		callRecord.FinishedAt = &finishedAt
 	}
 	return f.completeErr
 }
 
-func (f *fakeModelCallService) Finish(ctx context.Context, userID uint64, model *modelcall.Model) error {
+func (f *fakeModelCallService) Finish(ctx context.Context, userID uint64, callRecord *modelcall.Model) error {
 	*f.calls = append(*f.calls, "model-finish")
 	f.finishCtx = ctx
 	f.finishUser = userID
-	f.finished = model
+	f.finished = callRecord
 	f.finishCtxErr = ctx.Err()
 	f.finishDeadline, f.finishHasDeadline = ctx.Deadline()
 	if f.finishErr == nil {
 		finishedAt := time.Date(2026, time.August, 11, 10, 0, 1, 0, time.UTC)
-		model.FinishedAt = &finishedAt
+		callRecord.FinishedAt = &finishedAt
 	}
 	return f.finishErr
 }
@@ -333,16 +333,16 @@ func TestFinishFailedModelCallUsesCleanupContextAndJoinsErrors(t *testing.T) {
 	finishErr := errors.New("finish failed")
 	modelCalls := &fakeModelCallService{calls: &calls, finishErr: finishErr}
 	service := &Service{modelCall: modelCalls}
-	model := &modelcall.Model{Status: modelcall.StatusRunning}
+	callRecord := &modelcall.Model{Status: modelcall.StatusRunning}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := service.finishFailedModelCall(ctx, 7, model, context.Canceled, "llm")
+	err := service.finishFailedModelCall(ctx, 7, callRecord, context.Canceled, "llm")
 	if !errors.Is(err, context.Canceled) || !errors.Is(err, finishErr) {
 		t.Fatalf("finishFailedModelCall() error = %v", err)
 	}
-	if model.Status != modelcall.StatusCancelled || model.ErrorCode == nil || *model.ErrorCode != "llm_cancelled" {
-		t.Fatalf("model = %#v", model)
+	if callRecord.Status != modelcall.StatusCancelled || callRecord.ErrorCode == nil || *callRecord.ErrorCode != "llm_cancelled" {
+		t.Fatalf("callRecord = %#v", callRecord)
 	}
 	if modelCalls.finishCtxErr != nil || !modelCalls.finishHasDeadline {
 		t.Fatalf("cleanup context error = %v, has deadline = %v", modelCalls.finishCtxErr, modelCalls.finishHasDeadline)
@@ -358,13 +358,13 @@ func TestFinishFailedModelCallPreservesExistingTerminalFailure(t *testing.T) {
 	modelCalls := &fakeModelCallService{calls: &calls}
 	service := &Service{modelCall: modelCalls}
 	errorCode := "assistant_message_timed_out"
-	model := &modelcall.Model{Status: modelcall.StatusTimedOut, ErrorCode: &errorCode}
+	callRecord := &modelcall.Model{Status: modelcall.StatusTimedOut, ErrorCode: &errorCode}
 
-	if err := service.finishFailedModelCall(context.Background(), 7, model, errors.New("commit failed"), "model_call_complete"); err == nil {
+	if err := service.finishFailedModelCall(context.Background(), 7, callRecord, errors.New("commit failed"), "model_call_complete"); err == nil {
 		t.Fatal("finishFailedModelCall() error = nil")
 	}
-	if model.Status != modelcall.StatusTimedOut || model.ErrorCode == nil || *model.ErrorCode != errorCode {
-		t.Fatalf("existing terminal failure was overwritten: %#v", model)
+	if callRecord.Status != modelcall.StatusTimedOut || callRecord.ErrorCode == nil || *callRecord.ErrorCode != errorCode {
+		t.Fatalf("existing terminal failure was overwritten: %#v", callRecord)
 	}
 }
 
@@ -385,7 +385,7 @@ func (f *fakeUnitOfWork) WithinTx(ctx context.Context, fn func(MessageService, M
 	return fn(f.messages, f.modelCalls)
 }
 
-func TestServiceReceiveAndResponse(t *testing.T) {
+func TestServiceChat(t *testing.T) {
 	calls := make([]string, 0, 4)
 	createdAt := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
 	assistant := &message.Message{
@@ -418,15 +418,15 @@ func TestServiceReceiveAndResponse(t *testing.T) {
 	type contextKey string
 	ctx := context.WithValue(context.Background(), contextKey("request-id"), "request-1")
 
-	got, err := service.ReceiveAndResponse(ctx, 7, 9, "What is an interface?")
+	got, err := service.Chat(ctx, 7, 9, "What is an interface?")
 	if err != nil {
-		t.Fatalf("ReceiveAndResponse() error = %v", err)
+		t.Fatalf("Chat() error = %v", err)
 	}
 	if got.ID != assistant.ID || got.Role != assistant.Role || got.Content != assistant.Content ||
 		!got.CreatedAt.Equal(assistant.CreatedAt) || got.Model != modelResult.Model ||
 		got.InputTokens != modelResult.InputTokens || got.OutputTokens != modelResult.OutputTokens ||
 		got.TotalTokens != modelResult.TotalTokens {
-		t.Fatalf("ReceiveAndResponse() result = %#v", got)
+		t.Fatalf("Chat() result = %#v", got)
 	}
 	if want := []string{"user", "model-start", "recent", "llm", "assistant", "model-complete"}; !equalStrings(calls, want) {
 		t.Fatalf("call order = %v, want %v", calls, want)
@@ -438,7 +438,7 @@ func TestServiceReceiveAndResponse(t *testing.T) {
 		t.Fatalf("message service received user ID %d, conversation ID %d, content %q, limit %d", messages.userID, messages.conversationID, messages.userContent, messages.recentLimit)
 	}
 	if messages.createUserCtx != ctx || messages.assistantCtx != ctx || model.ctx != ctx {
-		t.Fatal("ReceiveAndResponse() did not pass its context through the workflow")
+		t.Fatal("Chat() did not pass its context through the workflow")
 	}
 	if messages.assistantText != model.result.Content {
 		t.Fatalf("assistant content = %q, want %q", messages.assistantText, model.result.Content)
@@ -495,7 +495,7 @@ func TestServiceRespondToMessageUsesExistingRequestMessage(t *testing.T) {
 	}
 }
 
-func TestServiceReceiveAndResponseStopsAfterFailure(t *testing.T) {
+func TestServiceChatStopsAfterFailure(t *testing.T) {
 	userErr := errors.New("create user message")
 	recentErr := errors.New("list recent messages")
 	modelErr := errors.New("generate response")
@@ -530,12 +530,12 @@ func TestServiceReceiveAndResponseStopsAfterFailure(t *testing.T) {
 			transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
 			service := NewService(messages, model, modelCalls, transactions, noDocumentRetriever{})
 
-			got, err := service.ReceiveAndResponse(context.Background(), 7, 9, "question")
+			got, err := service.Chat(context.Background(), 7, 9, "question")
 			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("ReceiveAndResponse() error = %v, want %v", err, tt.wantErr)
+				t.Fatalf("Chat() error = %v, want %v", err, tt.wantErr)
 			}
 			if got != nil {
-				t.Fatalf("ReceiveAndResponse() message = %#v, want nil", got)
+				t.Fatalf("Chat() message = %#v, want nil", got)
 			}
 			if !equalStrings(calls, tt.wantCalls) {
 				t.Fatalf("call order = %v, want %v", calls, tt.wantCalls)
@@ -544,7 +544,7 @@ func TestServiceReceiveAndResponseStopsAfterFailure(t *testing.T) {
 	}
 }
 
-func TestServiceReceiveAndResponseFinishesWhenCompletionFails(t *testing.T) {
+func TestServiceChatFinishesWhenCompletionFails(t *testing.T) {
 	completeErr := errors.New("complete model call")
 	calls := make([]string, 0, 8)
 	assistant := &message.Message{ID: 3, Role: message.RoleAssistant, Content: "answer"}
@@ -561,12 +561,12 @@ func TestServiceReceiveAndResponseFinishesWhenCompletionFails(t *testing.T) {
 	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
 	service := NewService(messages, model, modelCalls, transactions, noDocumentRetriever{})
 
-	got, err := service.ReceiveAndResponse(context.Background(), 7, 9, "question")
+	got, err := service.Chat(context.Background(), 7, 9, "question")
 	if !errors.Is(err, completeErr) {
-		t.Fatalf("ReceiveAndResponse() error = %v, want %v", err, completeErr)
+		t.Fatalf("Chat() error = %v, want %v", err, completeErr)
 	}
 	if got != nil {
-		t.Fatalf("ReceiveAndResponse() result = %#v, want nil", got)
+		t.Fatalf("Chat() result = %#v, want nil", got)
 	}
 	if want := []string{"user", "model-start", "recent", "llm", "assistant", "model-complete", "model-finish"}; !equalStrings(calls, want) {
 		t.Fatalf("call order = %v, want %v", calls, want)

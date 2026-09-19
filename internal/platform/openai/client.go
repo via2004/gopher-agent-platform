@@ -249,6 +249,7 @@ func continuationFromOutput(items []responses.ResponseOutputItemUnion) ([]json.R
 	return continuation, nil
 }
 
+// 根据组织好的 messages 请求大模型并返回结果；Streaming Chat 未包装 Agent 时进入这个实现。
 func (c *Client) GenerateStream(ctx context.Context, messages []llm.Message, onDelta func(string) error) (result *llm.Result, err error) {
 	if onDelta == nil {
 		return nil, llm.ErrOnDeltaMissed

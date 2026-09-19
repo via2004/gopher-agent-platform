@@ -51,40 +51,41 @@ type Result struct {
 
 type generateFunc func(context.Context, []llm.Message) (*llm.Result, error)
 
-// 接收并保存用户提问，根据历史消息和可用的 RAG 资料生成回答，再保存回复。
-func (s *Service) ReceiveAndResponse(ctx context.Context, userID uint64,
+// 普通Chat的服务, 接收并保存用户提问，根据历史消息和可用的 RAG 资料生成回答，再保存回复。
+func (s *Service) Chat(ctx context.Context, userID uint64,
 	conversationID uint64, content string) (*Result, error) {
 
-	model, err := s.receive(ctx, userID, conversationID, content)
+	callRecord, err := s.receive(ctx, userID, conversationID, content)
 	if err != nil {
 		return nil, err
 	}
 
-	return s.respond(ctx, userID, conversationID, model, s.model.Generate)
+	return s.respond(ctx, userID, conversationID, callRecord, s.model.Generate)
 }
 
 func (s *Service) RespondToMessage(ctx context.Context, userID uint64,
 	conversationID uint64, requestMessageID uint64) (*Result, error) {
-	model, err := s.startModelCallForExistingMessage(ctx, userID, requestMessageID, conversationID)
+	callRecord, err := s.startModelCallForExistingMessage(ctx, userID, requestMessageID, conversationID)
 	if err != nil {
 		return nil, err
 	}
 
-	return s.respond(ctx, userID, conversationID, model, s.model.Generate)
+	return s.respond(ctx, userID, conversationID, callRecord, s.model.Generate)
 }
 
+// 流式Chat的服务, 基本和普通Chat保持一致
 func (s *Service) ChatStreaming(ctx context.Context, userID uint64,
 	conversationID uint64, content string, onDelta func(string) error) (*Result, error) {
 	generate := func(ctx context.Context, messages []llm.Message) (*llm.Result, error) {
 		return s.model.GenerateStream(ctx, messages, onDelta)
 	}
 
-	model, err := s.receive(ctx, userID, conversationID, content)
+	callRecord, err := s.receive(ctx, userID, conversationID, content)
 	if err != nil {
 		return nil, err
 	}
 
-	return s.respond(ctx, userID, conversationID, model, generate)
+	return s.respond(ctx, userID, conversationID, callRecord, generate)
 }
 
 /*
@@ -94,7 +95,7 @@ func (s *Service) ChatStreaming(ctx context.Context, userID uint64,
 UnitOfWork 将绑定到同一个 pgx.Tx 的两个 Service 传入回调，确保两次写入使用同一事务。
 业务层决定哪些操作一起完成，具体的 Begin、Commit、Rollback 留给事务实现层。
 */
-func (s *Service) startModelCall(ctx context.Context, userID, conversationID uint64, content string, model *modelcall.Model) error {
+func (s *Service) startModelCall(ctx context.Context, userID, conversationID uint64, content string, callRecord *modelcall.Model) error {
 	return s.transactions.WithinTx(ctx, func(
 		messages MessageService,
 		modelCalls ModelCallService,
@@ -106,33 +107,33 @@ func (s *Service) startModelCall(ctx context.Context, userID, conversationID uin
 
 		info := s.model.Info()
 
-		model.RequestMessageID = message.ID
-		model.RequestedModel = &info.Model
-		model.Provider = info.Provider
+		callRecord.RequestMessageID = message.ID
+		callRecord.RequestedModel = &info.Model
+		callRecord.Provider = info.Provider
 
-		return modelCalls.Start(ctx, userID, model)
+		return modelCalls.Start(ctx, userID, callRecord)
 	})
 }
 
 func (s *Service) startModelCallForExistingMessage(ctx context.Context, userID, requestMessageID, conversationID uint64) (*modelcall.Model, error) {
-	model := &modelcall.Model{
+	callRecord := &modelcall.Model{
 		ConversationID:   conversationID,
 		RequestMessageID: requestMessageID,
 	}
 	info := s.model.Info()
 
-	model.RequestedModel = &info.Model
-	model.Provider = info.Provider
+	callRecord.RequestedModel = &info.Model
+	callRecord.Provider = info.Provider
 
-	if err := s.modelCall.Start(ctx, userID, model); err != nil {
+	if err := s.modelCall.Start(ctx, userID, callRecord); err != nil {
 		return nil, err
 	}
-	return model, nil
+	return callRecord, nil
 }
 
 // 在一个事务中保存回复并更新 model_calls 的成功状态。
 func (s *Service) saveAssistantAndComplete(ctx context.Context, userID,
-	conversationID uint64, modelResult *llm.Result, model *modelcall.Model) (*message.Message, error) {
+	conversationID uint64, modelResult *llm.Result, callRecord *modelcall.Model) (*message.Message, error) {
 	var assistant *message.Message
 	err := s.transactions.WithinTx(ctx, func(
 		messages MessageService,
@@ -141,20 +142,20 @@ func (s *Service) saveAssistantAndComplete(ctx context.Context, userID,
 		created, err := messages.CreateAssistantMessage(ctx, userID,
 			conversationID, modelResult.Content)
 		if err != nil {
-			markModelCallFailure(model, err, "assistant_message")
+			markModelCallFailure(callRecord, err, "assistant_message")
 			return err
 		}
 
 		assistant = created
 
-		model.AssistantMessageID = &assistant.ID
-		model.ActualModel = &modelResult.Model
-		model.InputTokens = &modelResult.InputTokens
-		model.OutputTokens = &modelResult.OutputTokens
-		model.TotalTokens = &modelResult.TotalTokens
+		callRecord.AssistantMessageID = &assistant.ID
+		callRecord.ActualModel = &modelResult.Model
+		callRecord.InputTokens = &modelResult.InputTokens
+		callRecord.OutputTokens = &modelResult.OutputTokens
+		callRecord.TotalTokens = &modelResult.TotalTokens
 
-		if err := modelCalls.Complete(ctx, userID, model); err != nil {
-			markModelCallFailure(model, err, "model_call_complete")
+		if err := modelCalls.Complete(ctx, userID, callRecord); err != nil {
+			markModelCallFailure(callRecord, err, "model_call_complete")
 			return err
 		}
 		return nil
@@ -183,16 +184,16 @@ func toResult(assistant *message.Message, modelResult *llm.Result) *Result {
 func (s *Service) receive(ctx context.Context, userID uint64,
 	conversationID uint64, content string) (*modelcall.Model, error) {
 
-	model := &modelcall.Model{
+	callRecord := &modelcall.Model{
 		ConversationID: conversationID,
 	}
 
-	err := s.startModelCall(ctx, userID, conversationID, content, model)
+	err := s.startModelCall(ctx, userID, conversationID, content, callRecord)
 	if err != nil {
 		return nil, err
 	}
 
-	return model, nil
+	return callRecord, nil
 }
 
 /*
@@ -204,32 +205,32 @@ func (s *Service) receive(ctx context.Context, userID uint64,
 generate 把具体生成方式作为函数参数传入，让普通和流式生成复用 respond 的其他步骤。
 */
 func (s *Service) respond(ctx context.Context, userID uint64,
-	conversationID uint64, model *modelcall.Model,
+	conversationID uint64, callRecord *modelcall.Model,
 	generate generateFunc) (*Result, error) {
 	messages, err := s.messages.ListRecent(ctx, userID, conversationID, defaultMessageLimit)
 	if err != nil {
-		return nil, s.finishFailedModelCall(ctx, userID, model, err, "history_load")
+		return nil, s.finishFailedModelCall(ctx, userID, callRecord, err, "history_load")
 	}
 
 	modelMessages, err := s.prepareModelMessages(
 		ctx,
 		userID,
-		model.RequestMessageID,
+		callRecord.RequestMessageID,
 		messages,
 	)
 	if err != nil {
-		return nil, s.finishFailedModelCall(ctx, userID, model, err, "prepare_model_message")
+		return nil, s.finishFailedModelCall(ctx, userID, callRecord, err, "prepare_model_message")
 	}
 
 	// 回调generate函数调用大模型
 	modelResult, err := generate(ctx, modelMessages)
 	if err != nil {
-		return nil, s.finishFailedModelCall(ctx, userID, model, err, "llm")
+		return nil, s.finishFailedModelCall(ctx, userID, callRecord, err, "llm")
 	}
 
-	assistant, err := s.saveAssistantAndComplete(ctx, userID, conversationID, modelResult, model)
+	assistant, err := s.saveAssistantAndComplete(ctx, userID, conversationID, modelResult, callRecord)
 	if err != nil {
-		return nil, s.finishFailedModelCall(ctx, userID, model, err, "model_call_complete")
+		return nil, s.finishFailedModelCall(ctx, userID, callRecord, err, "model_call_complete")
 	}
 
 	return toResult(assistant, modelResult), nil
@@ -238,37 +239,37 @@ func (s *Service) respond(ctx context.Context, userID uint64,
 func (s *Service) finishFailedModelCall(
 	ctx context.Context,
 	userID uint64,
-	model *modelcall.Model,
+	callRecord *modelcall.Model,
 	cause error,
 	operation string,
 ) error {
-	if !model.Status.IsFailureTerminal() {
-		markModelCallFailure(model, cause, operation)
+	if !callRecord.Status.IsFailureTerminal() {
+		markModelCallFailure(callRecord, cause, operation)
 	}
 
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), modelCallFinishTimeout)
 	defer cancel()
-	return errors.Join(cause, s.modelCall.Finish(cleanupCtx, userID, model))
+	return errors.Join(cause, s.modelCall.Finish(cleanupCtx, userID, callRecord))
 }
 
-func markModelCallFailure(model *modelcall.Model, err error, operation string) {
+func markModelCallFailure(callRecord *modelcall.Model, err error, operation string) {
 	statusSuffix := "failed"
-	model.Status = modelcall.StatusFailed
+	callRecord.Status = modelcall.StatusFailed
 
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		model.Status = modelcall.StatusTimedOut
+		callRecord.Status = modelcall.StatusTimedOut
 		statusSuffix = "timed_out"
 	case errors.Is(err, context.Canceled):
-		model.Status = modelcall.StatusCancelled
+		callRecord.Status = modelcall.StatusCancelled
 		statusSuffix = "cancelled"
 	case errors.Is(err, llm.ErrResponseNotCompleted):
-		model.Status = modelcall.StatusIncomplete
+		callRecord.Status = modelcall.StatusIncomplete
 		statusSuffix = "incomplete"
 	}
 
 	errorCode := operation + "_" + statusSuffix
-	model.ErrorCode = &errorCode
+	callRecord.ErrorCode = &errorCode
 }
 
 // 准备提供给大模型的相关上下文

@@ -221,6 +221,7 @@ type chatFeature struct {
 	rabbitMQ   *rabbitmqplatform.RabbitMQClient
 }
 
+// 组装Chat Module
 func buildChatFeature(
 	pool *pgxpool.Pool,
 	model llm.ModelClient,

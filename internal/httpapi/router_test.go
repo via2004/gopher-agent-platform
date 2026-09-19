@@ -444,7 +444,7 @@ func TestNewRouterServesChatForAuthenticatedUser(t *testing.T) {
 		t.Fatalf("Verify() = %d calls with %q, want 1 call with %q", verifier.calls, verifier.token, "access-token")
 	}
 	if service.calls != 1 || service.userID != 7 || service.conversationID != 9 || service.content != "hello" {
-		t.Fatalf("ReceiveAndResponse() = %d calls with user ID %d, conversation ID %d, content %q", service.calls, service.userID, service.conversationID, service.content)
+		t.Fatalf("Chat() = %d calls with user ID %d, conversation ID %d, content %q", service.calls, service.userID, service.conversationID, service.content)
 	}
 }
 

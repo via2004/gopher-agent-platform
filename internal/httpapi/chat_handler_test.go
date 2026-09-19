@@ -33,7 +33,7 @@ type fakeChatService struct {
 	streamErr      error
 }
 
-func (f *fakeChatService) ReceiveAndResponse(
+func (f *fakeChatService) Chat(
 	ctx context.Context,
 	userID uint64,
 	conversationID uint64,
@@ -147,7 +147,7 @@ func TestChatHandlerChat(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 	if service.calls != 1 || service.userID != 7 || service.conversationID != 9 || service.content != "What is an interface?" {
-		t.Fatalf("ReceiveAndResponse() = %d calls with user ID %d, conversation ID %d, content %q", service.calls, service.userID, service.conversationID, service.content)
+		t.Fatalf("Chat() = %d calls with user ID %d, conversation ID %d, content %q", service.calls, service.userID, service.conversationID, service.content)
 	}
 	assertChatContext(t, service.ctx, key, "request-1")
 	var response chatResponseBody
@@ -184,7 +184,7 @@ func TestChatHandlerRejectsInvalidRequest(t *testing.T) {
 
 			assertErrorResponse(t, recorder, http.StatusBadRequest, "INVALID_REQUEST")
 			if service.calls != 0 {
-				t.Fatalf("ReceiveAndResponse() calls = %d, want 0", service.calls)
+				t.Fatalf("Chat() calls = %d, want 0", service.calls)
 			}
 		})
 	}
@@ -212,7 +212,7 @@ func TestChatHandlerRejectsMissingOrInvalidContextUserID(t *testing.T) {
 
 			assertErrorResponse(t, recorder, http.StatusUnauthorized, "UNAUTHORIZED")
 			if service.calls != 0 {
-				t.Fatalf("ReceiveAndResponse() calls = %d, want 0", service.calls)
+				t.Fatalf("Chat() calls = %d, want 0", service.calls)
 			}
 		})
 	}
@@ -246,7 +246,7 @@ func TestChatHandlerMapsServiceErrors(t *testing.T) {
 
 			assertErrorResponse(t, recorder, tt.wantStatus, tt.wantCode)
 			if service.calls != 1 {
-				t.Fatalf("ReceiveAndResponse() calls = %d, want 1", service.calls)
+				t.Fatalf("Chat() calls = %d, want 1", service.calls)
 			}
 		})
 	}
