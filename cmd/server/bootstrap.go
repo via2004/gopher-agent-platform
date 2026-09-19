@@ -36,33 +36,54 @@ import (
 	"gopherai/internal/tts"
 )
 
+// 基础设施连接与健康检查。
 const (
-	dependencyPingTimeout                  = 5 * time.Second
-	rabbitMQConnectAttempts                = 15
-	rabbitMQConnectRetryInterval           = time.Second
-	defaultMCPCallTimeout                  = 10 * time.Second
-	defaultBaiduTTSTimeout                 = 10 * time.Second
-	defaultChatRateLimit             int64 = 10
-	defaultChatRateWindow                  = time.Minute
-	defaultRAGUploadRateLimit        int64 = 3
-	defaultRAGUploadRateWindow             = time.Hour
-	defaultTTSRateLimit              int64 = 5
-	defaultTTSRateWindow                   = time.Hour
-	defaultEmailVerificationCodeTTL        = 10 * time.Minute
-	defaultEmailVerificationResend         = time.Minute
-	defaultEmailVerificationAttempts       = 5
-	defaultSMTPHost                        = "smtp.qq.com"
-	defaultSMTPPort                        = 587
-	defaultSMTPFromName                    = "GopherAI"
-	defaultSMTPTimeout                     = 10 * time.Second
+	dependencyPingTimeout        = 5 * time.Second
+	rabbitMQConnectAttempts      = 15
+	rabbitMQConnectRetryInterval = time.Second
+	mcpConnectAttempts           = 15
+	mcpConnectRetryInterval      = time.Second
+)
+
+// 外部模型服务调用超时。
+const (
+	defaultMCPCallTimeout  = 10 * time.Second
+	defaultBaiduTTSTimeout = 10 * time.Second
+)
+
+// 已登录用户的业务接口限流。
+const (
+	defaultChatRateLimit       int64 = 10
+	defaultChatRateWindow            = time.Minute
+	defaultRAGUploadRateLimit  int64 = 3
+	defaultRAGUploadRateWindow       = time.Hour
+	defaultTTSRateLimit        int64 = 5
+	defaultTTSRateWindow             = time.Hour
+)
+
+// 公开认证接口的来源 IP 限流。
+const (
 	defaultAuthRegisterRateLimit     int64 = 10
 	defaultAuthRegisterRateWindow          = 10 * time.Minute
 	defaultAuthLoginRateLimit        int64 = 20
 	defaultAuthLoginRateWindow             = 5 * time.Minute
 	defaultEmailVerificationIPLimit  int64 = 10
 	defaultEmailVerificationIPWindow       = time.Hour
-	mcpConnectAttempts                     = 15
-	mcpConnectRetryInterval                = time.Second
+)
+
+// 邮箱验证码业务规则。
+const (
+	defaultEmailVerificationCodeTTL  = 10 * time.Minute
+	defaultEmailVerificationResend   = time.Minute
+	defaultEmailVerificationAttempts = 5
+)
+
+// SMTP 连接默认值。
+const (
+	defaultSMTPHost     = "smtp.qq.com"
+	defaultSMTPPort     = 587
+	defaultSMTPFromName = "GopherAI"
+	defaultSMTPTimeout  = 10 * time.Second
 )
 
 type rabbitMQConnector func(string) (*rabbitmqplatform.RabbitMQClient, error)
