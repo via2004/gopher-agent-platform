@@ -28,6 +28,18 @@ cp .env.compose.example .env.compose
 `.env.compose` 包含本机密钥且已被 Git 忽略。PostgreSQL、Valkey 和 RabbitMQ 的
 容器内部连接地址由 `compose.yaml` 设置，不需要写入该文件。
 
+Podman 可能自动把宿主机的代理变量注入容器。如果代理只监听宿主的 `127.0.0.1`，
+容器无法直接使用它，因此 Compose 默认清空运行时代理。确实需要代理时，应提供一个
+容器能够访问的地址：
+
+```bash
+export CONTAINER_HTTP_PROXY=http://host.containers.internal:7897
+export CONTAINER_HTTPS_PROXY=http://host.containers.internal:7897
+```
+
+代理服务必须监听容器可达的宿主地址；只监听 `127.0.0.1` 仍然不可用。镜像构建阶段
+使用 host network，可以继续使用仅监听宿主 loopback 的本地代理。
+
 构建并启动：
 
 ```bash
@@ -144,6 +156,17 @@ docker compose down -v
 
 `down -v` 会不可恢复地删除数据库、队列、Redis 和 RAG 文档数据，只应在明确需要
 重置开发环境时使用。
+
+## 已接受的 MVP 边界
+
+ChatJob 创建当前采用“PostgreSQL 写入 pending Job，再发布 RabbitMQ 消息”的顺序，
+两步之间不是原子事务。若数据库写入成功但消息发布失败，可能留下没有对应队列消息的
+pending Job。本阶段不引入 Transactional Outbox、后台扫描补发、lease 或死信队列，
+后续如进入可靠性专项再统一设计交付语义。
+
+TTS 任务由百度 Provider 保存，本地不持久化 `user_id -> task_id` 归属。查询接口要求 JWT，
+但持有其他用户泄露的不可预测 `task_id` 时，理论上仍可能查询到临时音频 URL。严格归属
+校验需要新增本地 TTS 任务表；当前模板范围接受这一边界。
 
 ## 本地验证
 

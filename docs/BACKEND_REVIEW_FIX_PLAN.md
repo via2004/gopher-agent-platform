@@ -282,7 +282,17 @@ planning 流式请求
 
 ## 阶段 4：PostgreSQL Integration 与最终验收
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- 使用独立临时 PostgreSQL 17 数据库执行全部 7 个 migration，Repository integration tests 真实通过。
+- `go test ./...`、`go test -race ./...`、`go vet ./...` 和 `podman compose config --quiet` 全部通过。
+- 完整重建 Backend 镜像，ONNX Runtime 与 MobileNet 下载文件的 SHA256 校验通过。
+- 修复 Podman 自动注入宿主 loopback 代理导致容器无法访问 MCP 和外部 Provider 的问题。
+- 真实 E2E 覆盖邮箱验证码、注册登录、普通 Chat、SSE 天气 Tool Calling、ChatJob、RAG、ONNX 和 TTS。
+- Compose 全停再启动后，PostgreSQL 会话数据、Redis RAG current 版本和 RAG 文件均可继续使用。
+- 验收创建的数据库记录、Redis key 和 RAG 文件已清理，Compose 恢复邮箱验证关闭的原配置。
 
 ### 目标
 

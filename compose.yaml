@@ -62,6 +62,14 @@ services:
       MCP_HTTP_ADDR: 0.0.0.0:8081
       WEATHER_API_BASE_URL: ${WEATHER_API_BASE_URL:-https://wttr.in}
       WEATHER_API_TIMEOUT_SECONDS: ${WEATHER_API_TIMEOUT_SECONDS:-5}
+      HTTP_PROXY: ${CONTAINER_HTTP_PROXY:-}
+      HTTPS_PROXY: ${CONTAINER_HTTPS_PROXY:-}
+      ALL_PROXY: ${CONTAINER_ALL_PROXY:-}
+      http_proxy: ${CONTAINER_HTTP_PROXY:-}
+      https_proxy: ${CONTAINER_HTTPS_PROXY:-}
+      all_proxy: ${CONTAINER_ALL_PROXY:-}
+      NO_PROXY: 127.0.0.1,localhost
+      no_proxy: 127.0.0.1,localhost
     healthcheck:
       test: ["CMD", "/app/healthcheck", "http://127.0.0.1:8081/healthz"]
       interval: 5s
@@ -74,6 +82,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 允许构建阶段访问仅监听宿主 loopback 的本地代理。
+      network: host
       args:
         GO_IMAGE: ${GO_IMAGE:-docker.io/library/golang:1.25-bookworm}
         RUNTIME_IMAGE: ${RUNTIME_IMAGE:-docker.io/library/debian:bookworm-slim}
@@ -90,6 +100,15 @@ services:
       IMAGE_LABELS_PATH: /app/models/imagenet_classes.txt
       RAG_STORAGE_ROOT: /app/data/rag
       MCP_SERVER_URL: http://mcp-server:8081/mcp
+      # 不继承 Podman 自动注入的宿主 loopback 代理；需要代理时显式配置 CONTAINER_*_PROXY。
+      HTTP_PROXY: ${CONTAINER_HTTP_PROXY:-}
+      HTTPS_PROXY: ${CONTAINER_HTTPS_PROXY:-}
+      ALL_PROXY: ${CONTAINER_ALL_PROXY:-}
+      http_proxy: ${CONTAINER_HTTP_PROXY:-}
+      https_proxy: ${CONTAINER_HTTPS_PROXY:-}
+      all_proxy: ${CONTAINER_ALL_PROXY:-}
+      NO_PROXY: 127.0.0.1,localhost,postgres,valkey,rabbitmq,mcp-server,backend
+      no_proxy: 127.0.0.1,localhost,postgres,valkey,rabbitmq,mcp-server,backend
     depends_on:
       postgres:
         condition: service_healthy
