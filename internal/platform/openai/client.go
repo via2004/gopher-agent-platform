@@ -71,6 +71,7 @@ func NewClientWithConfig(config Config, options ...option.RequestOption) (*Clien
 	}, nil
 }
 
+// 根据组织好的 messages 请求大模型并返回结果；普通 Chat 未包装 Agent 时进入这个实现。
 func (c *Client) Generate(ctx context.Context, messages []llm.Message) (*llm.Result, error) {
 	response, err := c.client.Responses.New(ctx, responses.ResponseNewParams{
 		Model: c.model,

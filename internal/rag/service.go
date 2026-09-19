@@ -113,6 +113,7 @@ func (s *Service) Upload(ctx context.Context, userID uint64,
 	}, nil
 }
 
+// 检索用户当前已激活文档的 RAG 资料，根据提问返回最多 topK 个相关 chunk。
 func (s *Service) Retrieve(ctx context.Context, userID uint64,
 	query string, topK int,
 ) ([]Chunk, error) {

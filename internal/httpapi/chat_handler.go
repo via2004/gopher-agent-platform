@@ -33,6 +33,7 @@ func NewChatHandler(chats ChatService) *ChatHandler {
 	}
 }
 
+// 普通chat的入口函数,
 func (h *ChatHandler) Chat(c *gin.Context) {
 	userID, ok := checkUserIDValidity(c)
 	if !ok {
@@ -69,7 +70,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	}
 
 	controller := http.NewResponseController(c.Writer)
-	// 不设置截止时间
+	// 清除服务器默认的 HTTP 写超时，允许等待模型；下面的 context 仍限制两分钟，客户端断开也会取消请求。
 	if err := controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		c.JSON(http.StatusInternalServerError, &errorResponse{
 			Code: "INTERNAL_SERVER_ERROR", Message: "internal server error",

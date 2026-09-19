@@ -26,6 +26,9 @@ func NewModelRepository(pool DBTX) *ModelRepository {
 	}
 }
 
+/*
+把本次生成尝试以 running 状态写入 model_calls 表，回填调用 ID 和开始时间。
+*/
 func (r *ModelRepository) Create(ctx context.Context, userID uint64,
 	model *modelcall.Model) error {
 	err := r.pool.QueryRow(ctx, InsertRunningModelCall,
@@ -41,7 +44,7 @@ func (r *ModelRepository) Create(ctx context.Context, userID uint64,
 	return nil
 }
 
-// LLM 正常返回，并且 assistant message 已成功保存(需要 assistant message)
+// 更新调用成功状态，需要已插入的 assistant 消息；普通 Chat 中两次写入仍需一起提交事务。
 func (r *ModelRepository) CompleteModelCall(ctx context.Context,
 	userID uint64, model *modelcall.Model) error {
 
@@ -63,7 +66,7 @@ func (r *ModelRepository) CompleteModelCall(ctx context.Context,
 }
 
 // LLM 调用失败、客户端断开、超时或返回不完整(不需要 assistant message)
-// 失败事务也直接调这个方法
+// 普通 Chat 的失败收尾通过连接池单独执行此 UPDATE，不在已失败的事务中继续写入。
 func (r *ModelRepository) FinishModelCall(ctx context.Context,
 	userID uint64, model *modelcall.Model) error {
 

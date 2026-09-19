@@ -16,6 +16,7 @@ func NewService(modelCalls Repository) *Service {
 	}
 }
 
+// 把调用记录写入 model_calls 表，状态为 running；这里只登记生成尝试，还没有请求大模型。
 func (s *Service) Start(ctx context.Context, userID uint64, modelCall *Model) error {
 	if userID == 0 {
 		return conversation.ErrInvalidUserID

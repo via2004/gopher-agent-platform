@@ -70,6 +70,7 @@ func (s *Service) List(ctx context.Context,
 	return messages, nil
 }
 
+// 通过 Repository 查询当前用户在该会话中最近 limit 条消息，返回时按从旧到新排列。
 func (s *Service) ListRecent(ctx context.Context, userID,
 	conversationID uint64, limit int) ([]*Message, error) {
 	if userID == 0 {
