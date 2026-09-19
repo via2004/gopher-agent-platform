@@ -3,11 +3,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"unicode/utf8"
 
 	"gopherai/internal/llm"
 )
 
-// Model 是 Agent 编排需要的模型能力；流式工具循环会在后续阶段补充。
+const maxPlanningOutputRunes = 20_000
+
+// Model 是 Agent 编排普通与流式 Tool Calling 需要的模型能力。
 type Model interface {
 	llm.ToolModel
 	llm.StreamingClient
@@ -77,23 +80,54 @@ func (c *Client) Generate(ctx context.Context, messages []llm.Message) (*llm.Res
 	return final, nil
 }
 
-// GenerateStream 在阶段 6 前保持原有流式模型行为，不执行工具调用。
 func (c *Client) GenerateStream(ctx context.Context, messages []llm.Message, onDelta func(string) error) (*llm.Result, error) {
+	if onDelta == nil {
+		return nil, llm.ErrOnDeltaMissed
+	}
 	streamingModel, ok := c.model.(llm.StreamingToolModel)
 	toolDefinitions := c.tools.Tools()
 	if !ok || len(toolDefinitions) == 0 {
 		return c.model.GenerateStream(ctx, messages, onDelta)
 	}
 
-	planning, err := streamingModel.GenerateStreamWithTools(ctx, messages, toolDefinitions, onDelta)
+	planningDeltas := make([]string, 0)
+	planningRuneCount := 0
+	bufferPlanningDelta := func(delta string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if delta == "" {
+			return nil
+		}
+		deltaRunes := utf8.RuneCountInString(delta)
+		if deltaRunes > maxPlanningOutputRunes-planningRuneCount {
+			return ErrPlanningOutputTooLarge
+		}
+		planningRuneCount += deltaRunes
+		planningDeltas = append(planningDeltas, delta)
+		return nil
+	}
+
+	planning, err := streamingModel.GenerateStreamWithTools(ctx, messages, toolDefinitions, bufferPlanningDelta)
 	if err != nil {
 		return nil, err
 	}
 	if planning == nil || planning.Result == nil {
 		return nil, ErrInvalidPlanning
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	switch len(planning.ToolCalls) {
 	case 0:
+		for _, delta := range planningDeltas {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if err := onDelta(delta); err != nil {
+				return nil, err
+			}
+		}
 		return planning.Result, nil
 	case 1:
 	default:

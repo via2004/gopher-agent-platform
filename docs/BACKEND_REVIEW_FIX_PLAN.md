@@ -205,7 +205,15 @@ Redis 异常    -> 503
 
 ## 阶段 3：SSE Tool Calling 输出一致性
 
-状态：`pending`
+状态：`completed`
+
+完成记录：
+
+- Agent 的流式 planning delta 先进入内存缓冲，不再直接写入最终 SSE callback。
+- planning 无 ToolCall 时按原分段顺序回放；存在 ToolCall 时丢弃 planning 文本，只流式输出最终回答。
+- planning 缓冲限制为 20,000 个 Unicode 字符，超限返回明确错误。
+- 多 ToolCall、工具执行失败和请求取消均不会泄漏已缓冲的 planning 文本。
+- 测试覆盖无工具回放、工具调用丢弃、错误路径、缓冲上限、callback 错误和 context 全链路透传。
 
 ### 问题
 

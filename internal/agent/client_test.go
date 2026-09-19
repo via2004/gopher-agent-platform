@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"gopherai/internal/llm"
@@ -55,23 +56,34 @@ type fakeTools struct {
 	calls       int
 	name        string
 	arguments   json.RawMessage
+	ctx         context.Context
 }
 
 type fakeStreamingModel struct {
 	fakeModel
-	streamPlanning    *llm.ToolModelResult
-	streamPlanningErr error
-	streamFinal       *llm.Result
-	streamFinalErr    error
-	streamCall        llm.ToolCall
-	streamOutput      json.RawMessage
+	streamPlanning       *llm.ToolModelResult
+	streamPlanningErr    error
+	streamPlanningDeltas []string
+	streamFinal          *llm.Result
+	streamFinalErr       error
+	streamCall           llm.ToolCall
+	streamOutput         json.RawMessage
+	streamPlanningCtx    context.Context
+	streamFinalCtx       context.Context
 }
 
-func (f *fakeStreamingModel) GenerateStreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDefinition, _ func(string) error) (*llm.ToolModelResult, error) {
+func (f *fakeStreamingModel) GenerateStreamWithTools(ctx context.Context, _ []llm.Message, _ []llm.ToolDefinition, onDelta func(string) error) (*llm.ToolModelResult, error) {
+	f.streamPlanningCtx = ctx
+	for _, delta := range f.streamPlanningDeltas {
+		if err := onDelta(delta); err != nil {
+			return nil, err
+		}
+	}
 	return f.streamPlanning, f.streamPlanningErr
 }
 
-func (f *fakeStreamingModel) GenerateStreamWithToolResult(_ context.Context, _ []llm.Message, _ []json.RawMessage, call llm.ToolCall, output json.RawMessage, onDelta func(string) error) (*llm.Result, error) {
+func (f *fakeStreamingModel) GenerateStreamWithToolResult(ctx context.Context, _ []llm.Message, _ []json.RawMessage, call llm.ToolCall, output json.RawMessage, onDelta func(string) error) (*llm.Result, error) {
+	f.streamFinalCtx = ctx
 	f.streamCall = call
 	f.streamOutput = output
 	if f.streamFinalErr != nil {
@@ -88,8 +100,9 @@ func (f *fakeStreamingModel) GenerateStreamWithToolResult(_ context.Context, _ [
 
 func (f *fakeTools) Tools() []llm.ToolDefinition { return f.definitions }
 
-func (f *fakeTools) Call(_ context.Context, name string, arguments json.RawMessage) (json.RawMessage, error) {
+func (f *fakeTools) Call(ctx context.Context, name string, arguments json.RawMessage) (json.RawMessage, error) {
 	f.calls++
+	f.ctx = ctx
 	f.name = name
 	f.arguments = arguments
 	return f.output, f.err
@@ -217,6 +230,42 @@ func TestClientDelegatesStreamingAndModelInfo(t *testing.T) {
 	}
 }
 
+func TestClientGenerateStreamRejectsMissingCallback(t *testing.T) {
+	client, err := NewClient(&fakeStreamingModel{}, &fakeTools{definitions: []llm.ToolDefinition{{Name: "get_weather"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GenerateStream(t.Context(), nil, nil); !errors.Is(err, llm.ErrOnDeltaMissed) {
+		t.Fatalf("GenerateStream() error = %v, want %v", err, llm.ErrOnDeltaMissed)
+	}
+}
+
+func TestClientGenerateStreamFlushesPlanningDeltasWithoutToolCall(t *testing.T) {
+	model := &fakeStreamingModel{
+		streamPlanning:       &llm.ToolModelResult{Result: &llm.Result{Content: "plain answer"}},
+		streamPlanningDeltas: []string{"plain ", "answer"},
+	}
+	client, err := NewClient(model, &fakeTools{definitions: []llm.ToolDefinition{{Name: "get_weather"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var deltas []string
+	result, err := client.GenerateStream(t.Context(), nil, func(delta string) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "plain answer" || strings.Join(deltas, "") != result.Content {
+		t.Fatalf("GenerateStream() = %#v, deltas = %#v", result, deltas)
+	}
+	if len(deltas) != 2 || deltas[0] != "plain " || deltas[1] != "answer" {
+		t.Fatalf("deltas = %#v", deltas)
+	}
+}
+
 func TestClientGenerateStreamExecutesToolAndAggregatesUsage(t *testing.T) {
 	call := llm.ToolCall{ID: "fc_1", CallID: "call_1", Name: "get_weather", Arguments: json.RawMessage(`{"city":"上海"}`)}
 	toolOutput := json.RawMessage(`{"location":"上海","temperature_c":23}`)
@@ -226,7 +275,8 @@ func TestClientGenerateStreamExecutesToolAndAggregatesUsage(t *testing.T) {
 			ToolCalls:    []llm.ToolCall{call},
 			Continuation: []json.RawMessage{json.RawMessage(`{"type":"function_call"}`)},
 		},
-		streamFinal: &llm.Result{Content: "final answer", InputTokens: 20, OutputTokens: 5, TotalTokens: 25},
+		streamPlanningDeltas: []string{"I will check the weather."},
+		streamFinal:          &llm.Result{Content: "final answer", InputTokens: 20, OutputTokens: 5, TotalTokens: 25},
 	}
 	tools := &fakeTools{output: toolOutput, definitions: []llm.ToolDefinition{{Name: "get_weather"}}}
 	client, err := NewClient(model, tools)
@@ -234,7 +284,9 @@ func TestClientGenerateStreamExecutesToolAndAggregatesUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	var deltas []string
-	result, err := client.GenerateStream(t.Context(), []llm.Message{{Role: "user", Content: "上海天气"}}, func(delta string) error {
+	type contextKey string
+	ctx := context.WithValue(t.Context(), contextKey("request-id"), "request-1")
+	result, err := client.GenerateStream(ctx, []llm.Message{{Role: "user", Content: "上海天气"}}, func(delta string) error {
 		deltas = append(deltas, delta)
 		return nil
 	})
@@ -244,11 +296,149 @@ func TestClientGenerateStreamExecutesToolAndAggregatesUsage(t *testing.T) {
 	if result.Content != "final answer" || result.InputTokens != 30 || result.OutputTokens != 8 || result.TotalTokens != 38 {
 		t.Fatalf("GenerateStream() = %#v", result)
 	}
-	if len(deltas) != 2 || deltas[0] != "final " || deltas[1] != "answer" {
+	if len(deltas) != 2 || deltas[0] != "final " || deltas[1] != "answer" || strings.Join(deltas, "") != result.Content {
 		t.Fatalf("deltas = %#v", deltas)
 	}
 	if tools.calls != 1 || model.streamCall.Name != call.Name || string(model.streamOutput) != string(toolOutput) {
 		t.Fatalf("tool call = %d, %s, %s", tools.calls, model.streamCall.Name, model.streamOutput)
+	}
+	if model.streamPlanningCtx != ctx || tools.ctx != ctx || model.streamFinalCtx != ctx {
+		t.Fatal("GenerateStream() did not pass the request context through planning, tool call, and final response")
+	}
+}
+
+func TestClientGenerateStreamDoesNotExposePlanningDeltasOnToolFailure(t *testing.T) {
+	toolErr := errors.New("tool failed")
+	model := &fakeStreamingModel{
+		streamPlanning: &llm.ToolModelResult{
+			Result:    &llm.Result{Content: "I will use a tool."},
+			ToolCalls: []llm.ToolCall{{Name: "get_weather", Arguments: json.RawMessage(`{}`)}},
+		},
+		streamPlanningDeltas: []string{"I will use a tool."},
+	}
+	client, err := NewClient(model, &fakeTools{
+		definitions: []llm.ToolDefinition{{Name: "get_weather"}},
+		err:         toolErr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var deltas []string
+	result, err := client.GenerateStream(t.Context(), nil, func(delta string) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if !errors.Is(err, toolErr) || result != nil {
+		t.Fatalf("GenerateStream() = %#v, %v; want tool error", result, err)
+	}
+	if len(deltas) != 0 {
+		t.Fatalf("planning deltas were exposed: %#v", deltas)
+	}
+}
+
+func TestClientGenerateStreamDoesNotExposePlanningDeltasForMultipleToolCalls(t *testing.T) {
+	model := &fakeStreamingModel{
+		streamPlanning: &llm.ToolModelResult{
+			Result:    &llm.Result{Content: "planning"},
+			ToolCalls: []llm.ToolCall{{Name: "one"}, {Name: "two"}},
+		},
+		streamPlanningDeltas: []string{"planning"},
+	}
+	client, err := NewClient(model, &fakeTools{definitions: []llm.ToolDefinition{{Name: "get_weather"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var deltas []string
+	result, err := client.GenerateStream(t.Context(), nil, func(delta string) error {
+		deltas = append(deltas, delta)
+		return nil
+	})
+	if !errors.Is(err, ErrMultipleToolCalls) || result != nil {
+		t.Fatalf("GenerateStream() = %#v, %v; want %v", result, err, ErrMultipleToolCalls)
+	}
+	if len(deltas) != 0 {
+		t.Fatalf("planning deltas were exposed: %#v", deltas)
+	}
+}
+
+func TestClientGenerateStreamBoundsPlanningOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		delta   string
+		wantErr error
+	}{
+		{name: "at limit", delta: strings.Repeat("界", maxPlanningOutputRunes)},
+		{name: "over limit", delta: strings.Repeat("界", maxPlanningOutputRunes+1), wantErr: ErrPlanningOutputTooLarge},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			model := &fakeStreamingModel{
+				streamPlanning:       &llm.ToolModelResult{Result: &llm.Result{Content: test.delta}},
+				streamPlanningDeltas: []string{test.delta},
+			}
+			client, err := NewClient(model, &fakeTools{definitions: []llm.ToolDefinition{{Name: "get_weather"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var deltas []string
+			result, err := client.GenerateStream(t.Context(), nil, func(delta string) error {
+				deltas = append(deltas, delta)
+				return nil
+			})
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("GenerateStream() error = %v, want %v", err, test.wantErr)
+			}
+			if test.wantErr != nil {
+				if result != nil || len(deltas) != 0 {
+					t.Fatalf("over-limit result = %#v, deltas = %#v", result, deltas)
+				}
+				return
+			}
+			if result == nil || len(deltas) != 1 || deltas[0] != test.delta {
+				t.Fatalf("at-limit result = %#v, deltas = %#v", result, deltas)
+			}
+		})
+	}
+}
+
+func TestClientGenerateStreamStopsBufferingWhenContextIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	model := &fakeStreamingModel{
+		streamPlanning:       &llm.ToolModelResult{Result: &llm.Result{Content: "planning"}},
+		streamPlanningDeltas: []string{"planning"},
+	}
+	client, err := NewClient(model, &fakeTools{definitions: []llm.ToolDefinition{{Name: "get_weather"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := client.GenerateStream(ctx, nil, func(string) error {
+		t.Fatal("external callback was called")
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || result != nil {
+		t.Fatalf("GenerateStream() = %#v, %v; want context canceled", result, err)
+	}
+}
+
+func TestClientGenerateStreamPropagatesCallbackErrorWhenFlushingPlanning(t *testing.T) {
+	callbackErr := errors.New("callback failed")
+	model := &fakeStreamingModel{
+		streamPlanning:       &llm.ToolModelResult{Result: &llm.Result{Content: "answer"}},
+		streamPlanningDeltas: []string{"answer"},
+	}
+	client, err := NewClient(model, &fakeTools{definitions: []llm.ToolDefinition{{Name: "get_weather"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := client.GenerateStream(t.Context(), nil, func(string) error { return callbackErr })
+	if !errors.Is(err, callbackErr) || result != nil {
+		t.Fatalf("GenerateStream() = %#v, %v; want callback error", result, err)
 	}
 }
 
