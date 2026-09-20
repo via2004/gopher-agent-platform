@@ -88,22 +88,7 @@ func (c *Client) Generate(ctx context.Context, messages []llm.Message) (*llm.Res
 	return resultFromResponse(response), nil
 }
 
-/*
-GenerateWithTools 发送工具定义，让模型返回普通文本或结构化 function call。
-Tool Use用:
-Include:
-
-	[]responses.ResponseIncludable{
-		// 返回模型推理过程对应的加密内容，放在reasoning output item的encrypted_content字段中
-		responses.ResponseIncludableReasoningEncryptedContent,
-	},
-
-的原因:
-因为后续还要再调一次LLM总结这一次Tool Use以及历史上下文的结果
-所以这里把工具调用大模型的思考上下文也带了出来,因为我们禁用了OPENAI云存储历史记录,
-所以需要在本地获取这些历史记录, 然后把历史记录和思考记录的所有流程交给总结答案的LLM
-让他有最完整的上下文,生成最终答案.
-*/
+// 把消息和工具定义交给模型，由模型决定直接回答还是请求工具调用。
 func (c *Client) GenerateWithTools(ctx context.Context, messages []llm.Message, tools []llm.ToolDefinition) (*llm.ToolModelResult, error) {
 	params, err := functionTools(tools)
 	if err != nil {
@@ -114,7 +99,7 @@ func (c *Client) GenerateWithTools(ctx context.Context, messages []llm.Message, 
 		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: messagesToInput(messages)},
 		Tools: params,
 		Include: []responses.ResponseIncludable{
-			responses.ResponseIncludableReasoningEncryptedContent,
+			responses.ResponseIncludableReasoningEncryptedContent, // 让响应包含“加密的推理内容”，方便后续请求继续使用推理上下文.
 		},
 		Store: openaisdk.Bool(!c.disableResponseStorage),
 		Reasoning: responses.ReasoningParam{
@@ -184,6 +169,7 @@ func messagesToInput(messages []llm.Message) responses.ResponseInputParam {
 	return input
 }
 
+// 把模型回复transfer成自定义结构体类型
 func resultFromResponse(response *responses.Response) *llm.Result {
 	return &llm.Result{
 		Content:      response.OutputText(),
@@ -194,6 +180,7 @@ func resultFromResponse(response *responses.Response) *llm.Result {
 	}
 }
 
+// 把项目内的工具定义转换为 OpenAI Go SDK 的工具参数。
 func functionTools(tools []llm.ToolDefinition) ([]responses.ToolUnionParam, error) {
 	params := make([]responses.ToolUnionParam, 0, len(tools))
 	for _, tool := range tools {
@@ -218,6 +205,7 @@ func paramOptString(value string) param.Opt[string] {
 	return param.NewOpt(value)
 }
 
+// 解析模型返回的内容中是否有tool call的需求, 把所有ToolCall的需求整理成自定义的结构体并返回
 func parseToolCalls(items []responses.ResponseOutputItemUnion) ([]llm.ToolCall, error) {
 	calls := make([]llm.ToolCall, 0)
 	for _, item := range items {
@@ -238,6 +226,7 @@ func parseToolCalls(items []responses.ResponseOutputItemUnion) ([]llm.ToolCall, 
 	return calls, nil
 }
 
+// 按原顺序保留各输出项的原始 JSON，供工具执行后的下一次模型请求继续使用。
 func continuationFromOutput(items []responses.ResponseOutputItemUnion) ([]json.RawMessage, error) {
 	continuation := make([]json.RawMessage, 0, len(items))
 	for _, item := range items {
@@ -348,6 +337,7 @@ func (c *Client) GenerateStreamWithToolResult(ctx context.Context, messages []ll
 	return result, nil
 }
 
+// 流式的接受模型的回答
 func (c *Client) streamResponse(ctx context.Context, params responses.ResponseNewParams, onDelta func(string) error) (result *responses.Response, content string, err error) {
 	stream := c.client.Responses.NewStreaming(ctx, params)
 	defer func() {

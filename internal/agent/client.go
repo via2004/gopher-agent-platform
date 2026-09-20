@@ -80,18 +80,21 @@ func (c *Client) Generate(ctx context.Context, messages []llm.Message) (*llm.Res
 	return final, nil
 }
 
+// 流式的带至多一轮工具调用的模型回答
 func (c *Client) GenerateStream(ctx context.Context, messages []llm.Message, onDelta func(string) error) (*llm.Result, error) {
 	if onDelta == nil {
 		return nil, llm.ErrOnDeltaMissed
 	}
 	streamingModel, ok := c.model.(llm.StreamingToolModel)
 	toolDefinitions := c.tools.Tools()
+	// 模型客户端不支持流式工具调用，或没有可用工具时，使用普通流式生成。
 	if !ok || len(toolDefinitions) == 0 {
 		return c.model.GenerateStream(ctx, messages, onDelta)
 	}
-
+	// 先缓存规划阶段的正文；是否调用工具，要等模型返回完整规划结果后判断。
 	planningDeltas := make([]string, 0)
 	planningRuneCount := 0
+	// 无工具调用时转发缓存正文；有工具调用时丢弃它，只转发最终回答。这不是 encrypted_content。
 	bufferPlanningDelta := func(delta string) error {
 		if err := ctx.Err(); err != nil {
 			return err
