@@ -452,7 +452,7 @@ func TestServiceChat(t *testing.T) {
 	}
 }
 
-func TestServiceRespondToMessageUsesExistingRequestMessage(t *testing.T) {
+func TestServiceChatFromExistingMessageUsesExistingRequestMessage(t *testing.T) {
 	calls := make([]string, 0, 5)
 	assistant := &message.Message{
 		ID:             3,
@@ -473,18 +473,18 @@ func TestServiceRespondToMessageUsesExistingRequestMessage(t *testing.T) {
 	transactions := &fakeUnitOfWork{messages: messages, modelCalls: modelCalls}
 	service := NewService(messages, model, modelCalls, transactions, noDocumentRetriever{})
 
-	got, err := service.RespondToMessage(context.Background(), 7, 9, 2)
+	got, err := service.ChatFromExistingMessage(context.Background(), 7, 9, 2)
 	if err != nil {
-		t.Fatalf("RespondToMessage() error = %v", err)
+		t.Fatalf("ChatFromExistingMessage() error = %v", err)
 	}
 	if got.ID != assistant.ID || got.Content != assistant.Content {
-		t.Fatalf("RespondToMessage() result = %#v", got)
+		t.Fatalf("ChatFromExistingMessage() result = %#v", got)
 	}
 	if want := []string{"model-start", "recent", "llm", "assistant", "model-complete"}; !equalStrings(calls, want) {
 		t.Fatalf("call order = %v, want %v", calls, want)
 	}
 	if messages.createUserCtx != nil {
-		t.Fatal("RespondToMessage() created a duplicate user message")
+		t.Fatal("ChatFromExistingMessage() created a duplicate user message")
 	}
 	if modelCalls.started == nil || modelCalls.started.RequestMessageID != 2 ||
 		modelCalls.started.ConversationID != 9 || modelCalls.startUserID != 7 {

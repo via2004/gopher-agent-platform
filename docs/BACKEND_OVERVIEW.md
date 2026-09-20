@@ -151,7 +151,7 @@ SSE 仍然执行上面的用户消息事务、历史/RAG、模型调用和最终
 1. 收到 job_id，以条件 UPDATE 抢占 pending Job，改为 processing 并增加 attempt_count。
 2. 创建或复用该 Job 的用户消息（request_message_id），防止每次重试都重复写一条提问。
 3. 查询该提问是否已有 completed model_call。如果回复已写成功、只差 Job 完成标记，就直接复用已有回复。
-4. 否则调用 `chat.Service.RespondToMessage`。它为已有用户消息开始一次 model_call，然后复用普通 Chat 的 respond 主流程。
+4. 否则调用 `chat.Service.ChatFromExistingMessage`。它为已有用户消息开始一次 model_call，然后复用普通 Chat 的 respond 主流程。
 5. 成功则把 Job 标为 completed；失败且未到尝试上限则改回 pending 并向消费者返回错误；到上限后尝试持久化 failed。
 6. Process 返回 nil → Ack；返回错误 → Nack 并重新入队。损坏或无效队列消息被 Reject、不重新入队。
 

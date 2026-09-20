@@ -291,6 +291,8 @@ func connectRabbitMQWithRetry(
 	return nil, fmt.Errorf("connect RabbitMQ after %d attempts: %w", maxAttempts, lastErr)
 }
 
+// 在一个独立的go routine中运行 rabbitMQ consumer,每次请求有独立的超时
+// consumer消费目前很单一,只有一个接口用到了RabbitMQ,直接无脑调Process即可
 func (f *chatFeature) StartConsumer(ctx context.Context) <-chan error {
 	errorsChannel := make(chan error, 1)
 	go func() {

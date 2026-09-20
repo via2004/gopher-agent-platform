@@ -63,7 +63,8 @@ func (s *Service) Chat(ctx context.Context, userID uint64,
 	return s.respond(ctx, userID, conversationID, callRecord, s.model.Generate)
 }
 
-func (s *Service) RespondToMessage(ctx context.Context, userID uint64,
+// 根据已经入库的Message请求LLM
+func (s *Service) ChatFromExistingMessage(ctx context.Context, userID uint64,
 	conversationID uint64, requestMessageID uint64) (*Result, error) {
 	callRecord, err := s.startModelCallForExistingMessage(ctx, userID, requestMessageID, conversationID)
 	if err != nil {

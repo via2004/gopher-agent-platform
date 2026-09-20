@@ -24,6 +24,7 @@ func NewChatJobsRepository(pool *pgxpool.Pool) *ChatJobsRepository {
 
 var _ chatjob.Repository = (*ChatJobsRepository)(nil)
 
+// chatJob入库
 func (r *ChatJobsRepository) Create(ctx context.Context, userID, conversationID uint64, content string) (*chatjob.Job, error) {
 	job := &chatjob.Job{}
 
@@ -67,6 +68,9 @@ func (r *ChatJobsRepository) GetByID(ctx context.Context, userID, jobID uint64) 
 	return job, nil
 }
 
+// 根据jobID获取内容和userID,根据job_id conversationID userID定位到一条job,
+// 原子更新它的status为processing, 设置started_at, 返回Job和userID
+// 这里同时做了重试次数 + 1
 func (r *ChatJobsRepository) ClaimForProcessing(ctx context.Context, jobID uint64) (*chatjob.Job, uint64, error) {
 	var userID uint64
 	job := &chatjob.Job{}

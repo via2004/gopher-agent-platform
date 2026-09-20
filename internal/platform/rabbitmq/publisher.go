@@ -11,6 +11,7 @@ type chatJobMessage struct {
 	JobID uint64 `json:"job_id"`
 }
 
+// 发布Job到消息队列中
 func (c *RabbitMQClient) PublishChatJob(ctx context.Context, jobID uint64) error {
 	if jobID == 0 {
 		return ErrJobIDInvalid
@@ -19,7 +20,6 @@ func (c *RabbitMQClient) PublishChatJob(ctx context.Context, jobID uint64) error
 	message := &chatJobMessage{
 		JobID: jobID,
 	}
-
 	body, err := json.Marshal(message)
 	if err != nil {
 		return ErrMarshalJobIDFailed
@@ -34,18 +34,18 @@ func (c *RabbitMQClient) PublishChatJob(ctx context.Context, jobID uint64) error
 		_ = channel.Close()
 	}()
 
+	// 消息找不到能接收它的队列时,通知发布方
 	returned := channel.NotifyReturn(make(chan amqp.Return, 1))
 
-	/*
-		这里的 false 是 noWait=false：
-		Go 请求开启 Confirm
-		RabbitMQ 回复 confirm.select-ok
-		然后才继续发布
-	*/
+	// RabbitMQ要对发布结果发送确认
 	if err := channel.Confirm(false); err != nil {
 		return fmt.Errorf("enable publisher confirm: %w", err)
 	}
 
+	// 发布到exchange, 由它路由到Queue
+	// mandatory=true: 无法路由到任何队列时,要求退回消息
+	// immediate=false: 不要求此刻必须有消费者立即接收
+	// Persistent: 消息标记为持久化
 	confirmation, err := channel.PublishWithDeferredConfirmWithContext(ctx, ExchangeName, QueueBindKey,
 		true, false, amqp.Publishing{
 			ContentType:  "application/json",
@@ -56,7 +56,7 @@ func (c *RabbitMQClient) PublishChatJob(ctx context.Context, jobID uint64) error
 		return fmt.Errorf("%w: %w", ErrPublishFailed, err)
 	}
 
-	// Wait until RabbitMQ accepts responsibility for the publishing.
+	// 等待这条消息的发布确认
 	acked, err := confirmation.WaitContext(ctx)
 	if err != nil {
 		return fmt.Errorf("wait publisher confirm: %w", err)
@@ -66,12 +66,9 @@ func (c *RabbitMQClient) PublishChatJob(ctx context.Context, jobID uint64) error
 	}
 
 	select {
-	/*
-		ok == false
-		表示 channel 已经关闭，里面也没有剩余数据。此时 Go 会返回 amqp.Return 的零值
-
-		成功路由时根本不return,所以我们要先做confirm后做return
-	*/
+	// 为什么收到 Confirm 后还要检查 Return？
+	// 无法路由的消息也可能收到肯定 Confirm。 对于这里的 mandatory 消息，RabbitMQ 会先发送 Return，再发送 Confirm.
+	// 所以代码先等待 Confirm，这时候如果有return存在return也已经收到了,这里保底判定一下消息有没有被退回来
 	case returnedMessage, ok := <-returned:
 		if ok {
 			return fmt.Errorf("%w: code=%d, reason:%s",

@@ -167,6 +167,7 @@ func (c *Client) GenerateWithToolResult(ctx context.Context, messages []llm.Mess
 	return resultFromResponse(response), nil
 }
 
+// 把实际的用户输入转换成模型实际能接收的格式
 func messagesToInput(messages []llm.Message) responses.ResponseInputParam {
 	input := make(responses.ResponseInputParam, 0, len(messages))
 	for _, item := range messages {

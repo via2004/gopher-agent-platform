@@ -33,6 +33,8 @@ func NewService(jobs Repository, client Publisher, service ChatProcessor, maxAtt
 	}
 }
 
+// 把一条任务写入到数据库中并且发布到消息队列里
+// 这里只是把任务写到数据库并记录在消息队列中,并不意味着任务已经完成了
 func (s *Service) Create(ctx context.Context, userID, conversationID uint64, content string) (*Job, error) {
 	if userID == 0 {
 		return nil, conversation.ErrInvalidUserID
@@ -47,11 +49,13 @@ func (s *Service) Create(ctx context.Context, userID, conversationID uint64, con
 		return nil, ErrInvalidContent
 	}
 
+	// Job 入库
 	job, err := s.jobs.Create(ctx, userID, conversationID, content)
 	if err != nil {
 		return nil, err
 	}
 
+	// 把Job发布到消息队列中
 	err = s.client.PublishChatJob(ctx, job.ID)
 	if err != nil {
 		return nil, err
@@ -85,11 +89,13 @@ func (s *Service) Process(ctx context.Context, jobID uint64) error {
 		return err
 	}
 
-	// 创建或服用requestMessageID
+	// 真实处理的时候才把Message入库, 创建或复用requestMessageID
 	requestMessageID, err := s.jobs.EnsureRequestMessage(ctx, userID, job.ID)
+	// 失败了同时还有重试机会,把状态恢复到RabbitMQ可以消费的状态方便下次重试
 	if err != nil && job.AttemptCount < s.maxAttempts {
 		return errors.Join(err, s.retry(ctx, job))
 	} else if err != nil {
+		// 失败了但没有重试机会,把job状态标记为fail
 		cleanupCtx, cancel := context.WithTimeout(
 			context.WithoutCancel(ctx),
 			5*time.Second,
@@ -132,7 +138,7 @@ func (s *Service) Process(ctx context.Context, jobID uint64) error {
 	}
 
 	// 没有，调模型跑这次的记录
-	result, chatErr := s.service.RespondToMessage(ctx, userID, job.ConversationID, requestMessageID)
+	result, chatErr := s.service.ChatFromExistingMessage(ctx, userID, job.ConversationID, requestMessageID)
 	if chatErr != nil {
 		// 进这个逻辑我们后续由rabbitmq进行retry,不需要进后续的fail逻辑了
 		if job.AttemptCount < s.maxAttempts {

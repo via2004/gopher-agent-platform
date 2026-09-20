@@ -51,7 +51,15 @@ func NewRabbitMQClient(url string) (client *RabbitMQClient, errs error) {
 		return nil, fmt.Errorf("exchange declare: %w", err)
 	}
 
-	_, err = channel.QueueDeclare(QueueName, true, false, false, false, nil)
+	// 第二个参数为true表示这个队列声明为持久化队列
+	_, err = channel.QueueDeclare(
+		QueueName,
+		true,  // durable: 队列持久化
+		false, // autoDelete: 不自动删除
+		false, // exclusive: 不独占
+		false, // noWait: 等待服务端确认声明
+		nil,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("queue declare: %w", err)
 	}

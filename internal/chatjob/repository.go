@@ -6,21 +6,15 @@ import (
 )
 
 type Repository interface {
-	// 验证conversation属于user,并创建Pending的任务
+	// 验证conversation属于user,并创建Pending的任务,但这里并不创建用户消息
 	Create(ctx context.Context, userID, conversationID uint64, content string) (*Job, error)
 	// 用户查询自己的任务状态，防止越权
 	GetByID(ctx context.Context, userID, jobID uint64) (*Job, error)
-	/*
-		Worker 根据 jobID 获取内容和 conversation 对应的 userID。
-		Worker 收到RabbitMQ的job_id后，查询任务内容，conversationID和对应userID
-		Claim同时完成：
-		检查status=pending
-		原子更新为processing
-		设置started_at
-		返回Job和userID
-	*/
+	// 根据jobID获取内容和userID,根据job_id conversationID userID定位到一条job,
+	// 原子更新它的status为processing, 设置started_at, 返回Job和userID
 	ClaimForProcessing(ctx context.Context, jobID uint64) (*Job, uint64, error)
 	Retry(ctx context.Context, jobID uint64) error
+	// 一次性生成该任务的用户消息，并在后续调用时返回相同的消息 ID。
 	EnsureRequestMessage(ctx context.Context, userID, jobID uint64) (uint64, error)
 	FindCompletedAssistantID(ctx context.Context, userID, jobID uint64) (uint64, bool, error)
 
@@ -50,6 +44,6 @@ type Publisher interface {
 }
 
 type ChatProcessor interface {
-	RespondToMessage(ctx context.Context, userID uint64,
+	ChatFromExistingMessage(ctx context.Context, userID uint64,
 		conversationID uint64, requestMessageID uint64) (*chat.Result, error)
 }

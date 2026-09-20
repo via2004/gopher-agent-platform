@@ -159,7 +159,7 @@ type fakeChatProcessor struct {
 	err              error
 }
 
-func (f *fakeChatProcessor) RespondToMessage(ctx context.Context, userID uint64,
+func (f *fakeChatProcessor) ChatFromExistingMessage(ctx context.Context, userID uint64,
 	conversationID uint64, requestMessageID uint64) (*chat.Result, error) {
 	f.calls++
 	f.ctx = ctx
@@ -320,7 +320,7 @@ func TestServiceProcessCompletesJob(t *testing.T) {
 	}
 	if processor.calls != 1 || processor.ctx != ctx || processor.userID != 7 ||
 		processor.conversationID != 9 || processor.requestMessageID != 51 {
-		t.Fatalf("RespondToMessage() = %d calls with user %d, conversation %d, request message %d",
+		t.Fatalf("ChatFromExistingMessage() = %d calls with user %d, conversation %d, request message %d",
 			processor.calls, processor.userID, processor.conversationID, processor.requestMessageID)
 	}
 	if repo.completeCalls != 1 || repo.completeJobID != 41 || repo.completeMessageID != 52 || repo.completeCtx != ctx {
@@ -347,7 +347,7 @@ func TestServiceProcessCompletesRecoveredAssistantMessage(t *testing.T) {
 		t.Fatalf("Process() error = %v", err)
 	}
 	if processor.calls != 0 {
-		t.Fatalf("RespondToMessage() calls = %d, want 0", processor.calls)
+		t.Fatalf("ChatFromExistingMessage() calls = %d, want 0", processor.calls)
 	}
 	if repo.completeCalls != 1 || repo.completeJobID != 41 || repo.completeMessageID != 52 {
 		t.Fatalf("Complete() = %d calls with job %d and message %d",

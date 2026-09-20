@@ -49,8 +49,7 @@ WHERE id = $1
 RETURNING id
 `
 
-// EnsureChatJobRequestMessage parameters: user ID and job ID. It creates the
-// job's user message once and returns the same message ID on later calls.
+// 一次性生成该任务的用户消息，并在后续调用时返回相同的消息 ID。
 const EnsureChatJobRequestMessage = `
 WITH target_job AS (
     SELECT j.id, j.conversation_id, j.content, j.request_message_id
