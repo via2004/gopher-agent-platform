@@ -9,6 +9,7 @@ const (
 	overlap   = 150  // 150 rune
 )
 
+// 将文档按照既定的分块逻辑进行分块并返回
 func SplitText(text string) ([]Chunk, error) {
 	if chunkSize <= 0 {
 		return nil, fmt.Errorf("chunkSize must be a positive")

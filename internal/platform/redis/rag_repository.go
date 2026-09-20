@@ -26,6 +26,8 @@ const (
 )
 
 // 原子发布新版本：取消新版本过期时间、切换 current，并给旧版本设置过期时间。
+// key: r.currentKey(userID), r.versionKey(userID, version)
+// argv: version, versionPrefix, int64(previousVersionTTL/time.Second),
 var activateScript = redis.NewScript(`
 if redis.call("EXISTS", KEYS[2]) == 0 then
     return redis.error_reply("RAG version does not exist")
@@ -74,7 +76,7 @@ func (r *RAGChunkRepository) Replace(
 	}
 
 	// 3&4&5. valid every chunk's Content And Vector is not empty
-	for i := 0; i < len(chunks); i++ {
+	for i := range chunks {
 		if len(chunks[i].Content) == 0 {
 			return ErrEmptyChunkContent
 		}

@@ -36,6 +36,7 @@ func NewService(documents DocumentStore, chunks ChunkRepository, embedder Embedd
 	}, nil
 }
 
+// 用户上传的文档切片, 目前文档支持 .md 和 .txt, 只接受utf8内的字符
 func (s *Service) Upload(ctx context.Context, userID uint64,
 	filename string, content []byte,
 ) (*Document, error) {
@@ -59,6 +60,8 @@ func (s *Service) Upload(ctx context.Context, userID uint64,
 	if ext != ".md" && ext != ".txt" {
 		return nil, ErrUnsupportedDocumentType
 	}
+
+	// 文档切片
 	chunks, err := SplitText(string(content))
 	if err != nil {
 		return nil, err
@@ -68,6 +71,7 @@ func (s *Service) Upload(ctx context.Context, userID uint64,
 		contents[i] = chunk.Content
 	}
 
+	// Embedding成向量
 	embedding, err := s.embedder.Embed(ctx, contents)
 	if err != nil {
 		return nil, err
@@ -93,11 +97,16 @@ func (s *Service) Upload(ctx context.Context, userID uint64,
 		return nil, err
 	}
 
+	// 当前用户的current指向新版本, Activate返回之前的版本, 尽力删除之前的版本
 	previous, err := s.chunks.Activate(ctx, userID, version)
+	/*
+		Activate 有三个步骤:
+		Go 发出 Activate 请求
+		→ Redis 执行 Lua，切换 current
+		→ Redis 把执行结果返回给 Go
+		可能 Redis 已切换 current，但返回结果时发生错误，因此保守地保留新版本原文件，避免误删已生效的资料。
+	*/
 	if err != nil {
-		// Activate may have committed in Redis even when the client did not
-		// receive its response. Keep the new version so current never points
-		// to deleted data; orphan cleanup is deliberately best effort later.
 		return nil, err
 	}
 	if previous != "" && previous != version {
